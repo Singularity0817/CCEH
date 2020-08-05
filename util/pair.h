@@ -18,7 +18,7 @@ struct Pair {
   Pair(void)
   : key{INVALID} { }
 
-  Pair(Key_t _key, Value_t _value)
+  inline Pair(Key_t _key, Value_t _value)
   : key{_key}, value{_value} { }
 
   Pair& operator=(const Pair& other) {
@@ -27,13 +27,13 @@ struct Pair {
     return *this;
   }
 
-  void* operator new(size_t size) {
+  inline void* operator new(size_t size) {
     void *ret;
     posix_memalign(&ret, 64, size);
     return ret;
   }
 
-  void* operator new[](size_t size) {
+  inline void* operator new[](size_t size) {
     void *ret;
     posix_memalign(&ret, 64, size);
     return ret;
