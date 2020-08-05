@@ -46,7 +46,14 @@ class myDB
             } else {
                 log->open(LOG_PATH);
                 void *log_data_handler = log->get_handler();
-
+                uint64_t log_size = log->get_current_writepoint();
+                uint64_t ancho = 0;
+                size_t value_size = 0;
+                while (ancho < log_size) {
+                    index->Insert(*((Key_t *)((char *)log_data_handler+ancho)), reinterpret_cast<Value_t>(ancho));
+                    value_size = *(size_t *)((char *)log_data_handler+ancho+sizeof(Key_t));
+                    ancho += (sizeof(Key_t)+sizeof(size_t)+value_size+1);
+                }
             }
             //request_queue = new moodycamel::ConcurrentQueue<struct Pair *>(ceil(MAX_QUEUE_LENGTH/MOODYCAMEL_BLOCK_SIZE)*MOODYCAMEL_BLOCK_SIZE);
         }
@@ -125,68 +132,109 @@ int main(){
     std::cout << " command is :" << mem_command << std::endl;
     zExecute(mem_command);
 
-    //CCEH* HashTable = new CCEH();
-    myDB* db = new myDB();
-    zExecute(mem_command);
-    /*
-    u_int64_t* keys = new u_int64_t[insertSize];
-    for(unsigned i=0; i<insertSize; i++){
-	keys[i] = i+1;
-    }
-    */
-    struct timespec time_start, time_end;
-    uint64_t time_span;
-    Key_t key;
-    Value_t value[2] = {"VALUE_1", "value_2"};
-    vector<Pair> pairs_to_put;
-    //clock_gettime(CLOCK_REALTIME, &time_start);
-    for(unsigned i=0; i<(insertSize/batchSize); i++){
-	//HashTable->Insert(keys[i], reinterpret_cast<Value_t>(&keys[i]));
-        pairs_to_put.clear();
-        for(unsigned j=0; j < batchSize; j++) {
-            pairs_to_put.push_back(Pair(i*batchSize+j, value[j%2]));
+    bool create = false;
+    if (create) {
+        //CCEH* HashTable = new CCEH();
+        cout << "Creating a new DB." << endl;
+        myDB* db = new myDB(create);
+        zExecute(mem_command);
+        /*
+        u_int64_t* keys = new u_int64_t[insertSize];
+        for(unsigned i=0; i<insertSize; i++){
+        keys[i] = i+1;
         }
+        */
+        struct timespec time_start, time_end;
+        uint64_t time_span;
+        Key_t key;
+        Value_t value[2] = {"VALUE_1", "value_2"};
+        vector<Pair> pairs_to_put;
+        //clock_gettime(CLOCK_REALTIME, &time_start);
+        for(unsigned i=0; i<(insertSize/batchSize); i++){
+        //HashTable->Insert(keys[i], reinterpret_cast<Value_t>(&keys[i]));
+            pairs_to_put.clear();
+            for(unsigned j=0; j < batchSize; j++) {
+                pairs_to_put.push_back(Pair(i*batchSize+j, value[j%2]));
+            }
+            clock_gettime(CLOCK_REALTIME, &time_start);
+            db->BatchInsert(&pairs_to_put);
+            clock_gettime(CLOCK_REALTIME, &time_end);
+            time_span += ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);
+        //key = i;
+        //db->Insert(key, value);
+        }
+        //clock_gettime(CLOCK_REALTIME, &time_end);
+        //time_span += ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);
+        double ops = insertSize/(double)time_span;
+        std::cout << "Insert ops: " << ops << std::endl;
+        zExecute(mem_command);
+        fflush(stdout);
+        int failSearch = 0;
+        std::default_random_engine re(time(0));
+        std::uniform_int_distribution<Key_t> u(0, insertSize-1);
+        uint64_t get_time_span = 0;
+        uint64_t get_time_max = 0, get_time_min = ~0, get_time_this;
+        unsigned itemstoget = 1000000;
+        for(unsigned i=0; i<itemstoget; i++){
+        //auto ret = HashTable->Get(keys[i]);
+        //key = i;
+        key = u(re);
         clock_gettime(CLOCK_REALTIME, &time_start);
-        db->BatchInsert(&pairs_to_put);
+        auto ret = db->Get(key);
         clock_gettime(CLOCK_REALTIME, &time_end);
-        time_span += ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);
-    //key = i;
-	//db->Insert(key, value);
+        get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
+        //cout << "Value for key " << key << " is " << ret << endl;
+        get_time_span += get_time_this;
+        if (get_time_this > get_time_max) get_time_max = get_time_this;
+        if (get_time_this < get_time_min) get_time_min = get_time_this;
+        /*
+        if(!ret){
+            failSearch++;
+        }
+        */
+        }
+        std::cout << "Avg Get Lat: " << get_time_span/(double)itemstoget << "ns, max " << get_time_max << "ns, min " << get_time_min << "ns." << std::endl;
+        //printf("failedSearch: %d\n", failSearch);
+        zExecute(mem_command);
+        fflush(stdout);
+    } else {
+        cout << "Reading an exiting DB." << endl;
+        struct timespec time_start, time_end;
+        clock_gettime(CLOCK_REALTIME, &time_start);
+        myDB* db = new myDB(create);
+        clock_gettime(CLOCK_REALTIME, &time_end);
+        cout << "Start time " << ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec)) << "ns." << endl;
+        zExecute(mem_command);
+        fflush(stdout);
+        int failSearch = 0;
+        std::default_random_engine re(time(0));
+        std::uniform_int_distribution<Key_t> u(0, insertSize-1);
+        uint64_t get_time_span = 0;
+        uint64_t get_time_max = 0, get_time_min = ~0, get_time_this;
+        unsigned itemstoget = 1000000;
+        for(unsigned i=0; i<itemstoget; i++){
+        //auto ret = HashTable->Get(keys[i]);
+        //key = i;
+        key = u(re);
+        clock_gettime(CLOCK_REALTIME, &time_start);
+        auto ret = db->Get(key);
+        clock_gettime(CLOCK_REALTIME, &time_end);
+        get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
+        cout << "Value for key " << key << " is " << ret << endl;
+        get_time_span += get_time_this;
+        if (get_time_this > get_time_max) get_time_max = get_time_this;
+        if (get_time_this < get_time_min) get_time_min = get_time_this;
+        /*
+        if(!ret){
+            failSearch++;
+        }
+        */
+        }
+        std::cout << "Avg Get Lat: " << get_time_span/(double)itemstoget << "ns, max " << get_time_max << "ns, min " << get_time_min << "ns." << std::endl;
+        //printf("failedSearch: %d\n", failSearch);
+        zExecute(mem_command);
+        fflush(stdout);
     }
-    //clock_gettime(CLOCK_REALTIME, &time_end);
-    //time_span += ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);
-    double ops = insertSize/(double)time_span;
-    std::cout << "Insert ops: " << ops << std::endl;
-    zExecute(mem_command);
-    fflush(stdout);
-    int failSearch = 0;
-    std::default_random_engine re(time(0));
-    std::uniform_int_distribution<Key_t> u(0, insertSize-1);
-    uint64_t get_time_span = 0;
-    uint64_t get_time_max = 0, get_time_min = ~0, get_time_this;
-    unsigned itemstoget = 1000000;
-    for(unsigned i=0; i<itemstoget; i++){
-	//auto ret = HashTable->Get(keys[i]);
-    //key = i;
-    key = u(re);
-    clock_gettime(CLOCK_REALTIME, &time_start);
-	auto ret = db->Get(key);
-    clock_gettime(CLOCK_REALTIME, &time_end);
-    get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
-    //cout << "Value for key " << key << " is " << ret << endl;
-    get_time_span += get_time_this;
-    if (get_time_this > get_time_max) get_time_max = get_time_this;
-    if (get_time_this < get_time_min) get_time_min = get_time_this;
-    /*
-	if(!ret){
-	    failSearch++;
-	}
-    */
-    }
-    std::cout << "Avg Get Lat: " << get_time_span/(double)itemstoget << "ns, max " << get_time_max << "ns, min " << get_time_min << "ns." << std::endl;
-    //printf("failedSearch: %d\n", failSearch);
-    zExecute(mem_command);
-    fflush(stdout);
     return 0;
 }
 
