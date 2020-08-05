@@ -17,6 +17,8 @@
 #include "wal.h"
 #include "util/concurrentqueue.h"
 
+using namespace std;
+
 #define LOG_PATH "/mnt/pmem0/zwh_test/cceh_log"
 #define MAX_QUEUE_LENGTH 1024
 
@@ -36,16 +38,22 @@ std::string zExecute(const std::string& cmd) {
 class myDB
 {
     public:
-        myDB() {
+        myDB(bool create) {
             index = new CCEH();
             log = new Wal();
-            log->create(LOG_PATH, LOG_POOL_SIZE);
-            request_queue = new moodycamel::ConcurrentQueue<struct Pair *>(ceil(MAX_QUEUE_LENGTH/MOODYCAMEL_BLOCK_SIZE)*MOODYCAMEL_BLOCK_SIZE);
+            if (create) {
+                log->create(LOG_PATH, LOG_POOL_SIZE);
+            } else {
+                log->open(LOG_PATH);
+                void *log_data_handler = log->get_handler();
+
+            }
+            //request_queue = new moodycamel::ConcurrentQueue<struct Pair *>(ceil(MAX_QUEUE_LENGTH/MOODYCAMEL_BLOCK_SIZE)*MOODYCAMEL_BLOCK_SIZE);
         }
         ~myDB() {
             delete log;
             delete index;
-            delete request_queue;
+            //delete request_queue;
         }
         /*
         void myDB::Insert(Key_t &key, Value_t value) {
@@ -53,29 +61,64 @@ class myDB
             while(!(request_queue->try_enqueue(p))) {}
         }
         */
-        void myDB::Insert(key_t &key, Value_t value) {
+        void Insert(Key_t &key, Value_t value) {
             size_t value_size = strlen(value);
             int buffer_size = sizeof(Key_t)+sizeof(size_t)+strlen(value)+1;
-            char *buffer = malloc(buffer_size);
+            char *buffer = (char *)malloc(buffer_size);
             memcpy(buffer, &key, sizeof(Key_t));
             memcpy(buffer+sizeof(Key_t), &value_size, sizeof(size_t));
             memcpy(buffer+sizeof(Key_t)+sizeof(size_t), value, value_size+1);
             auto pos = log->append(buffer, buffer_size);
-            index->Insert(key, static_cast<Value_t>(pos));
+            index->Insert(key, reinterpret_cast<Value_t>(pos));
+            free(buffer);
         }
-        inline Value_t myDB::Get(Key_t &key) {
-            return index->Get(key);
+        void BatchInsert(vector<Pair> *const pairs) {
+            int buffer_size = 0;
+            for(auto it = pairs->begin(); it != pairs->end(); it++) {
+                buffer_size += (sizeof(Key_t)+sizeof(size_t)+strlen((*it).value)+1);
+            }
+            char *buffer = (char *)malloc(buffer_size);
+            uint64_t offset = 0;
+            vector<uint64_t> offsets;
+            size_t value_size = 0;
+            //cout << "Begin Batch size " << buffer_size << endl;
+            for(auto it = pairs->begin(); it != pairs->end(); it++) {
+                //cout << "    " << (*it).key << "    " << (*it).value << endl;
+                offsets.push_back(offset);
+                value_size = strlen((*it).value);
+                memcpy(buffer+offset, &((*it).key), sizeof(Key_t));
+                memcpy(buffer+offset+sizeof(Key_t), &value_size, sizeof(size_t));
+                memcpy(buffer+offset+sizeof(Key_t)+sizeof(size_t), (*it).value, value_size+1);
+                offset += (sizeof(Key_t)+sizeof(size_t)+strlen((*it).value)+1);
+            }
+            auto pos = log->append(buffer, buffer_size);
+            for(int i = 0; i < pairs->size(); i++) {
+                index->Insert((pairs->at(i)).key, reinterpret_cast<Value_t>(pos+offsets[i]));
+            }
+            free(buffer);
+            //cout << "End Batch" << endl;
+        }
+        inline Value_t Get(Key_t &key) {
+            uint64_t offset = reinterpret_cast<uint64_t>(index->Get(key));
+            void *data_handler = log->get_data_offset(offset);
+            Key_t g_key = *((Key_t *)data_handler);
+            if (g_key != key) {
+                cout << "Get the wrong key " << g_key << " : " << key << endl;
+            }
+            return (Value_t)((char *)data_handler+sizeof(Key_t)+sizeof(size_t));
+
         }
     private:
         CCEH* index;
         Wal* log;
         //moodycamel::ConcurrentQueue<struct Pair *> request_queue;
-}
+};
 
 int main(){
     const size_t initialSize = 1024*16*4;
     const size_t insertSize = 100*1024*1024;
-
+    
+    int batchSize = 1024;
     pid_t pid = getpid();
     printf("Process ID %d\n", pid);
     std::string mem_command = "cat /proc/" + std::to_string(pid) + "/status >> mem_dump";
@@ -94,18 +137,28 @@ int main(){
     struct timespec time_start, time_end;
     uint64_t time_span;
     Key_t key;
-    clock_gettime(CLOCK_REALTIME, &time_start);
-    for(unsigned i=0; i<insertSize; i++){
+    Value_t value[2] = {"VALUE_1", "value_2"};
+    vector<Pair> pairs_to_put;
+    //clock_gettime(CLOCK_REALTIME, &time_start);
+    for(unsigned i=0; i<(insertSize/batchSize); i++){
 	//HashTable->Insert(keys[i], reinterpret_cast<Value_t>(&keys[i]));
-    key = i;
-	db->Insert(key, reinterpret_cast<Value_t>(key));
+        pairs_to_put.clear();
+        for(unsigned j=0; j < batchSize; j++) {
+            pairs_to_put.push_back(Pair(i*batchSize+j, value[j%2]));
+        }
+        clock_gettime(CLOCK_REALTIME, &time_start);
+        db->BatchInsert(&pairs_to_put);
+        clock_gettime(CLOCK_REALTIME, &time_end);
+        time_span += ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);
+    //key = i;
+	//db->Insert(key, value);
     }
-    clock_gettime(CLOCK_REALTIME, &time_end);
-    time_span += ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);
+    //clock_gettime(CLOCK_REALTIME, &time_end);
+    //time_span += ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);
     double ops = insertSize/(double)time_span;
     std::cout << "Insert ops: " << ops << std::endl;
     zExecute(mem_command);
-    
+    fflush(stdout);
     int failSearch = 0;
     std::default_random_engine re(time(0));
     std::uniform_int_distribution<Key_t> u(0, insertSize-1);
@@ -120,6 +173,7 @@ int main(){
 	auto ret = db->Get(key);
     clock_gettime(CLOCK_REALTIME, &time_end);
     get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
+    //cout << "Value for key " << key << " is " << ret << endl;
     get_time_span += get_time_this;
     if (get_time_this > get_time_max) get_time_max = get_time_this;
     if (get_time_this < get_time_min) get_time_min = get_time_this;
@@ -132,7 +186,7 @@ int main(){
     std::cout << "Avg Get Lat: " << get_time_span/(double)itemstoget << "ns, max " << get_time_max << "ns, min " << get_time_min << "ns." << std::endl;
     //printf("failedSearch: %d\n", failSearch);
     zExecute(mem_command);
-    
+    fflush(stdout);
     return 0;
 }
 

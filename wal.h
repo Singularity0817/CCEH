@@ -7,7 +7,7 @@
 #include <time.h>
 using namespace std;
 
-#define LOG_POOL_SIZE ((u_int64_t)32 << 30)
+#define LOG_POOL_SIZE ((u_int64_t)8 << 30)
 #define WAL_HEADER_SIZE 512
 
 #define WAL_MAGIC_NUM "31415926"
@@ -38,6 +38,9 @@ class Wal
 		void *get_handler();
 		u_int64_t get_current_writepoint(); //return the position of current writepoint.
 		u_int64_t get_wal_size();
+        void *get_data_offset(u_int64_t offset) {
+            return (void *)((char *)handler+offset);
+        }
 		
 	private:
 		void *handler;
