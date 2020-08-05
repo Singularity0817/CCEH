@@ -9,6 +9,11 @@
 #include "src/CCEH.h"
 
 extern size_t perfCounter;
+
+unsigned long put_entry_num = 0;
+unsigned long put_probe_time = 0;
+unsigned long get_entry_num = 0;
+unsigned long get_probe_time = 0;
 /*
 
 // This function does not allow resizing
@@ -153,6 +158,7 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
   Key_t LOCK = INVALID;
   for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
     auto slot = (loc + i) % kNumSlot;
+    put_probe_time++;
     Key_t key_ = get_key(slot);
     if (CAS(&key_, &LOCK, SENTINEL)) {
       pair_insert_pmem(slot,key,value); 
@@ -166,6 +172,7 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
       LOCK = INVALID;
     }
   }
+  put_entry_num++;
   lock = sema;
   while (!CAS(&sema, &lock, lock-1)) {
     lock = sema;
@@ -193,7 +200,7 @@ Segment** Segment::Split(PMEMobjpool *pop) {
  Segment** split = new Segment*[2];
   split[0] = new Segment(pop, local_depth+1);
   split[1] = new Segment(pop, local_depth+1);
-  printf("Split\n");
+  //printf("Split\n");
   for (unsigned i = 0; i < kNumSlot; ++i) {
     //auto key_hash = h(&_[i].key, sizeof(Key_t));
    Key_t key_ = get_key(i);
@@ -225,7 +232,7 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
       _[x] = s[1];
       segment_bind_pmem(x, s[1]);
       clflush((char*)&_[x], sizeof(Segment*));
-      printf("lsb update : %d %d\n",x-dir_cap/2, x);
+      //printf("lsb update : %d %d\n",x-dir_cap/2, x);
     } else {
       _[x] = s[0];
       segment_bind_pmem(x, s[0]);
@@ -233,7 +240,7 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
       _[x+dir_cap/2] = s[1];
       segment_bind_pmem(x+dir_cap/2, s[1]);
       clflush((char*)&_[x+dir_cap/2], sizeof(Segment*));
-      printf("lsb update : %d %d\n",x, x+dir_cap/2);
+      //printf("lsb update : %d %d\n",x, x+dir_cap/2);
     }
   } else {
     if ((x%dir_cap) >= dir_cap/2) {
@@ -339,7 +346,10 @@ CCEH::CCEH(size_t initCap, const char* path)
 }
 
 CCEH::~CCEH(void)
-{ }
+{
+    std::cout << "Total entries put: " << put_entry_num << ", probe time per entry: " << put_probe_time/(double)put_entry_num << std::endl;
+    std::cout << "Total entries get: " << get_entry_num << ", probe time per entry: " << get_probe_time/(double)get_entry_num << std::endl;
+}
 
 Value_t CCEH::Get(Key_t& key) {
   auto key_hash = h(&key, sizeof(key));
@@ -348,9 +358,10 @@ Value_t CCEH::Get(Key_t& key) {
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
 
   auto dir_ = dir->_[x];
-
+  get_entry_num++;
   for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
     auto slot = (y+i) % Segment::kNumSlot;
+    get_probe_time++;
     Key_t key_ = dir->_[x]->get_key(slot);
     if (key_ == key) {
      return dir->_[x]->get_value(slot);
