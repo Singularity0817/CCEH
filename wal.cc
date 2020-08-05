@@ -150,6 +150,18 @@ u_int64_t Wal::get_wal_size()
 {
 	return wal_size;
 }
+
+void *Wal::get_data_offset(u_int64_t offset) {
+    return (void *)((char *)handler+offset);
+}
+
+void *Wal::get_data_handler() {
+    return (void *)((char *)handler+WAL_HEADER_SIZE);
+}
+
+u_int64_t Wal::get_wal_data_size() {
+    return (get_current_writepoint()-WAL_HEADER_SIZE);
+}
 /*
 #include "./util.h"
 

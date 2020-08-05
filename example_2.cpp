@@ -16,12 +16,15 @@
 #include <random>
 #include "wal.h"
 #include "util/concurrentqueue.h"
+#include "util/ipmwatcher.h"
 
 using namespace std;
 
 #define LOG_PATH "/mnt/pmem0/zwh_test/cceh_log"
 #define MAX_QUEUE_LENGTH 1024
 
+#define TO_WAL_ACTUAL_POS(x) (x+WAL_HEADER_SIZE)
+/*
 std::string zExecute(const std::string& cmd) {
     std::array<char, 128> buffer;
     std::string result;
@@ -34,7 +37,7 @@ std::string zExecute(const std::string& cmd) {
     }
     return result;
 }
-
+*/
 class myDB
 {
     public:
@@ -45,15 +48,22 @@ class myDB
                 log->create(LOG_PATH, LOG_POOL_SIZE);
             } else {
                 log->open(LOG_PATH);
-                void *log_data_handler = log->get_handler();
-                uint64_t log_size = log->get_current_writepoint();
+                void *log_data_handler = log->get_data_handler();
+                uint64_t log_size = log->get_wal_data_size();
+                cout << "Log size is " << log_size << endl;
                 uint64_t ancho = 0;
                 size_t value_size = 0;
+                unsigned counter = 0;
                 while (ancho < log_size) {
-                    index->Insert(*((Key_t *)((char *)log_data_handler+ancho)), reinterpret_cast<Value_t>(ancho));
+#ifdef DEBUG
+                    cout << "Recovering key " << *((Key_t *)((char *)log_data_handler+ancho)) << " in pos " << ancho+WAL_HEADER_SIZE << endl;
+#endif
+                    index->Insert(*((Key_t *)((char *)log_data_handler+ancho)), reinterpret_cast<Value_t>(ancho+WAL_HEADER_SIZE));
                     value_size = *(size_t *)((char *)log_data_handler+ancho+sizeof(Key_t));
                     ancho += (sizeof(Key_t)+sizeof(size_t)+value_size+1);
+                    counter++;
                 }
+                cout << "Recover " << counter << " items." << endl;
             }
             //request_queue = new moodycamel::ConcurrentQueue<struct Pair *>(ceil(MAX_QUEUE_LENGTH/MOODYCAMEL_BLOCK_SIZE)*MOODYCAMEL_BLOCK_SIZE);
         }
@@ -111,6 +121,7 @@ class myDB
             Key_t g_key = *((Key_t *)data_handler);
             if (g_key != key) {
                 cout << "Get the wrong key " << g_key << " : " << key << endl;
+                exit(1);
             }
             return (Value_t)((char *)data_handler+sizeof(Key_t)+sizeof(size_t));
 
@@ -132,7 +143,7 @@ int main(){
     std::cout << " command is :" << mem_command << std::endl;
     zExecute(mem_command);
 
-    bool create = false;
+    bool create = true;
     if (create) {
         //CCEH* HashTable = new CCEH();
         cout << "Creating a new DB." << endl;
@@ -149,9 +160,10 @@ int main(){
         Key_t key;
         Value_t value[2] = {"VALUE_1", "value_2"};
         vector<Pair> pairs_to_put;
-        //clock_gettime(CLOCK_REALTIME, &time_start);
+        {
+        IPMWatcher write_watcher("write");
         for(unsigned i=0; i<(insertSize/batchSize); i++){
-        //HashTable->Insert(keys[i], reinterpret_cast<Value_t>(&keys[i]));
+            //HashTable->Insert(keys[i], reinterpret_cast<Value_t>(&keys[i]));
             pairs_to_put.clear();
             for(unsigned j=0; j < batchSize; j++) {
                 pairs_to_put.push_back(Pair(i*batchSize+j, value[j%2]));
@@ -160,8 +172,9 @@ int main(){
             db->BatchInsert(&pairs_to_put);
             clock_gettime(CLOCK_REALTIME, &time_end);
             time_span += ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);
-        //key = i;
-        //db->Insert(key, value);
+            //key = i;
+            //db->Insert(key, value);
+        }
         }
         //clock_gettime(CLOCK_REALTIME, &time_end);
         //time_span += ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);
@@ -175,6 +188,8 @@ int main(){
         uint64_t get_time_span = 0;
         uint64_t get_time_max = 0, get_time_min = ~0, get_time_this;
         unsigned itemstoget = 1000000;
+        {
+        IPMWatcher write_watcher("read");
         for(unsigned i=0; i<itemstoget; i++){
         //auto ret = HashTable->Get(keys[i]);
         //key = i;
@@ -193,17 +208,22 @@ int main(){
         }
         */
         }
+        }
         std::cout << "Avg Get Lat: " << get_time_span/(double)itemstoget << "ns, max " << get_time_max << "ns, min " << get_time_min << "ns." << std::endl;
         //printf("failedSearch: %d\n", failSearch);
         zExecute(mem_command);
         fflush(stdout);
     } else {
         cout << "Reading an exiting DB." << endl;
+        myDB* db;
         struct timespec time_start, time_end;
+        {
+        IPMWatcher write_watcher("write");
         clock_gettime(CLOCK_REALTIME, &time_start);
-        myDB* db = new myDB(create);
+        db = new myDB(create);
         clock_gettime(CLOCK_REALTIME, &time_end);
-        cout << "Start time " << ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec)) << "ns." << endl;
+        }
+        cout << "Recover time " << ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec)) << "ns." << endl;
         zExecute(mem_command);
         fflush(stdout);
         int failSearch = 0;
@@ -212,6 +232,7 @@ int main(){
         uint64_t get_time_span = 0;
         uint64_t get_time_max = 0, get_time_min = ~0, get_time_this;
         unsigned itemstoget = 1000000;
+        Key_t key;
         for(unsigned i=0; i<itemstoget; i++){
         //auto ret = HashTable->Get(keys[i]);
         //key = i;
@@ -220,7 +241,7 @@ int main(){
         auto ret = db->Get(key);
         clock_gettime(CLOCK_REALTIME, &time_end);
         get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
-        cout << "Value for key " << key << " is " << ret << endl;
+        //cout << "Value for key " << key << " is " << ret << endl;
         get_time_span += get_time_this;
         if (get_time_this > get_time_max) get_time_max = get_time_this;
         if (get_time_this < get_time_min) get_time_min = get_time_this;
