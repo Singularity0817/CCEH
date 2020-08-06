@@ -7,7 +7,7 @@
 #include <time.h>
 using namespace std;
 
-#define LOG_POOL_SIZE ((u_int64_t)8 << 30)
+#define LOG_POOL_SIZE ((u_int64_t)32 << 30)
 #define WAL_HEADER_SIZE 512
 
 #define WAL_MAGIC_NUM "31415926"

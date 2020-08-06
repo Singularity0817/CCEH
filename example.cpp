@@ -11,9 +11,11 @@
 #include <array>
 #include <memory>
 #include "util/pair.h"
-#include "src/CCEH.h"
 #include <time.h>
 #include <random>
+//#include "src/CCEH.h"
+#include "src/Level_hashing.h"
+//#include "src/cuckoo_hash.h"
 std::string zExecute(const std::string& cmd) {
     std::array<char, 128> buffer;
     std::string result;
@@ -29,7 +31,7 @@ std::string zExecute(const std::string& cmd) {
 
 int main(){
     const size_t initialSize = 1024*16*4;
-    const size_t insertSize = 100*1024*1024;
+    const size_t insertSize = 50*1024*1024;
 
     pid_t pid = getpid();
     printf("Process ID %d\n", pid);
@@ -37,7 +39,9 @@ int main(){
     std::cout << " command is :" << mem_command << std::endl;
     zExecute(mem_command);
 
-    CCEH* HashTable = new CCEH();
+    //CCEH* HashTable = new CCEH();
+    //CuckooHash* HashTable = new CuckooHash(1024*1024);
+    LevelHashing* HashTable = new LevelHashing(10);
     zExecute(mem_command);
     /*
     u_int64_t* keys = new u_int64_t[insertSize];
@@ -46,13 +50,14 @@ int main(){
     }
     */
     struct timespec time_start, time_end;
-    uint64_t time_span;
+    double time_span;
     Key_t key;
     clock_gettime(CLOCK_REALTIME, &time_start);
-    for(unsigned i=0; i<insertSize; i++){
+    for(unsigned i=1; i<=insertSize; i++){
 	//HashTable->Insert(keys[i], reinterpret_cast<Value_t>(&keys[i]));
     key = i;
-	HashTable->Insert(key, reinterpret_cast<Value_t>(key));
+    //std::cout << "Try to put key " << i << std::endl;
+	HashTable->Insert(key, reinterpret_cast<Value_t>(&key));
     }
     clock_gettime(CLOCK_REALTIME, &time_end);
     time_span += ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);

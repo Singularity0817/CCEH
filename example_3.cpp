@@ -11,12 +11,14 @@
 #include <array>
 #include <memory>
 #include "util/pair.h"
-#include "src/CCEH.h"
 #include <time.h>
 #include <random>
 #include "wal.h"
 #include "util/concurrentqueue.h"
 #include "util/ipmwatcher.h"
+//#include "src/CCEH.h"
+//#include "src/cuckoo_hash.h"
+#include "src/Level_hashing.h"
 
 using namespace std;
 
@@ -50,7 +52,9 @@ class myDB
 {
     public:
         myDB(bool create) {
-            index = new CCEH();
+            //index = new CCEH();
+            //index = new CuckooHash(1024*1024);
+            index = new LevelHashing(10);
             log = new Wal();
             if (create) {
                 log->create(LOG_PATH, LOG_POOL_SIZE);
@@ -144,7 +148,9 @@ class myDB
             cout << "Insert prepare time " << insert_prepare_time << ", log append time " << insert_log_append_time << ", index insert time " << insert_index_insert_time << endl;
         }
     private:
-        CCEH* index;
+        //CCEH* index;
+        //CuckooHash* index;
+        LevelHashing* index;
         Wal* log;
         uint64_t insert_prepare_time = 0;
         uint64_t insert_log_append_time = 0;
@@ -163,7 +169,7 @@ int main(){
     std::cout << " command is :" << mem_command << std::endl;
     zExecute(mem_command);
 
-    bool create = true;
+    bool create = false;
     if (create) {
         //CCEH* HashTable = new CCEH();
         cout << "Creating a new DB." << endl;
