@@ -42,9 +42,13 @@ RETRY:
     unique_lock<shared_mutex> f_lock(mutex[f_idx/locksize]);
     if (CAS(&table[f_idx].key, &f_invalid, SENTINEL)) {
       table[f_idx].value = value;
+#ifdef IS_PMEM
       mfence();
+#endif
       table[f_idx].key = key;
+#ifdef IS_PMEM
       clflush((char*)&table[f_idx], sizeof(Pair));
+#endif
       return;
     }
   }
@@ -52,9 +56,13 @@ RETRY:
     unique_lock<shared_mutex> s_lock(mutex[s_idx/locksize]);
     if (CAS(&table[s_idx].key, &s_invalid, SENTINEL)) {
       table[s_idx].value = value;
+#ifdef IS_PMEM
       mfence();
+#endif
       table[s_idx].key = key;
+#ifdef IS_PMEM
       clflush((char*)&table[s_idx], sizeof(Pair));
+#endif
       return;
     }
   }
@@ -157,15 +165,23 @@ bool CuckooHash::InsertOnly(Key_t& key, Value_t value) {
 
   if (CAS(&table[f_idx].key, &f_invalid, SENTINEL)) {
     table[f_idx].value = value;
+#ifdef IS_PMEM
     mfence();
+#endif
     table[f_idx].key = key;
+#ifdef IS_PMEM
     clflush((char*)&table[f_idx], sizeof(Pair));
+#endif
     return true;
   } else if (CAS(&table[s_idx].key, &s_invalid, SENTINEL)) {
     table[s_idx].value = value;
+#ifdef IS_PMEM
     mfence();
+#endif
     table[s_idx].key = key;
+#ifdef IS_PMEM
     clflush((char*)&table[s_idx], sizeof(Pair));
+#endif
     return true;
   } else {
     return false;
@@ -215,9 +231,13 @@ bool CuckooHash::execute_path(vector<pair<size_t,size_t>>& path) {
 
   for (auto p: path) {
     pushed[j] = table[p.first];
+#ifdef IS_PMEM
     clflush((char*)& pushed[j], sizeof(Pair));
+#endif
     table[p.first] = pushed[i];
+#ifdef IS_PMEM
     clflush((char*)& table[p.first], sizeof(Pair));
+#endif
     i = (i+1)%2;
     j = (i+1)%2;
   }
@@ -227,12 +247,18 @@ bool CuckooHash::execute_path(vector<pair<size_t,size_t>>& path) {
 bool CuckooHash::execute_path(vector<pair<size_t,size_t>>& path, Key_t& key, Value_t value) {
   for (int i = path.size()-1; i > 0; --i) {
     table[path[i].first] = table[path[i-1].first];
+#ifdef IS_PMEM
     clflush((char*)&table[path[i].first], sizeof(Pair));
+#endif
   }
   table[path[0].first].value = value;
+#ifdef IS_PMEM
   mfence();
+#endif
   table[path[0].first].key = key;
+#ifdef IS_PMEM
   clflush((char*)&table[path[0].first], sizeof(Pair));
+#endif
   return true;
 }
 
@@ -275,8 +301,10 @@ double CuckooHash::Utilization(void) {
 bool CuckooHash::resize(void) {
   old_cap = capacity;
   old_tab = table;
+#ifdef IS_PMEM
   clflush((char*)&old_cap, sizeof(size_t));
   clflush((char*)&old_tab, sizeof(Pair*));
+#endif
 
   std::unique_lock<std::shared_mutex> *lock[nlocks];
   for(int i=0;i<nlocks;i++){
@@ -298,8 +326,10 @@ bool CuckooHash::resize(void) {
       cerr << "error: memory allocation failed." << endl;
       exit(1);
     }
+#ifdef IS_PMEM
     clflush((char*)&table, sizeof(size_t));
     clflush((char*)&capacity, sizeof(Pair*));
+#endif
 
     for (unsigned i = 0; i < old_cap; ++i) {
       if (old_tab[i].key != INVALID) {
@@ -320,7 +350,9 @@ bool CuckooHash::resize(void) {
     nlocks = capacity/locksize+1;
     mutex = new std::shared_mutex[nlocks];
     delete old_mutex;
+#ifdef IS_PMEM
     clflush((char*)&table[0], sizeof(Pair*)*capacity);
+#endif
   } else {
     exit(1);
   }

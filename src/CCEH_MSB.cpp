@@ -28,7 +28,9 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
     }
     if (CAS(&_[slot].key, &LOCK, SENTINEL)) {
       _[slot].value = value;
+#ifdef IS_PMEM
       mfence();
+#endif
       _[slot].key = key;
       ret = 0;
       break;
@@ -54,7 +56,9 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
     auto slot = (loc + i) % kNumSlot;
     if (CAS(&_[slot].key, &LOCK, SENTINEL)) {
       _[slot].value = value;
+#ifdef IS_PMEM
       mfence();
+#endif
       _[slot].key = key;
       ret = 0;
       break;
@@ -98,10 +102,13 @@ Segment** Segment::Split(void) {
         (_[i].key, _[i].value, (key_hash & kMask)*kNumPairPerCacheLine);
     }
   }
-
+#ifdef IS_PMEM
   clflush((char*)split[1], sizeof(Segment));
+#endif
   local_depth = local_depth + 1;
+#ifdef IS_PMEM
   clflush((char*)&local_depth, sizeof(size_t));
+#endif
 
   return split;
 #else
@@ -119,10 +126,10 @@ Segment** Segment::Split(void) {
         (_[i].key, _[i].value, (key_hash & kMask)*kNumPairPerCacheLine);
     }
   }
-
+#ifdef IS_PMEM
   clflush((char*)split[0], sizeof(Segment));
   clflush((char*)split[1], sizeof(Segment));
-
+#endif
   return split;
 #endif
 }
@@ -154,14 +161,22 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
   if (depth_diff == 0) {
     if ((x % dir_cap) >= dir_cap/2) {
       _[x-dir_cap/2] = s[0];
+#ifdef IS_PMEM
       clflush((char*)&_[x-dir_cap/2], sizeof(Segment*));
+#endif
       _[x] = s[1];
+#ifdef IS_PMEM
       clflush((char*)&_[x], sizeof(Segment*));
+#endif
     } else {
       _[x] = s[0];
+#ifdef IS_PMEM
       clflush((char*)&_[x], sizeof(Segment*));
+#endif
       _[x+dir_cap/2] = s[1];
+#ifdef IS_PMEM
       clflush((char*)&_[x+dir_cap/2], sizeof(Segment*));
+#endif
     }
   } else {
     if ((x%dir_cap) >= dir_cap/2) {
@@ -214,20 +229,32 @@ RETRY:
           if (x%2 == 0) {
             dir->_[x+1] = s[1];
 #ifdef INPLACE
+#ifdef IS_PMEM
             clflush((char*) &dir->_[x+1], 8);
+#endif
 #else
+#ifdef IS_PMEM
             mfence();
+#endif
             dir->_[x] = s[0];
+#ifdef IS_PMEM
             clflush((char*) &dir->_[x], 16);
+#endif
 #endif
           } else {
             dir->_[x] = s[1];
 #ifdef INPLACE
+#ifdef IS_PMEM
             clflush((char*) &dir->_[x], 8);
+#endif
 #else
+#ifdef IS_PMEM
             mfence();
+#endif
             dir->_[x-1] = s[0];
+#ifdef IS_PMEM
             clflush((char*) &dir->_[x-1], 16);
+#endif
 #endif
           }
         } else {
@@ -236,12 +263,16 @@ RETRY:
           for (unsigned i = 0; i < chunk_size/2; ++i) {
             dir->_[x+chunk_size/2+i] = s[1];
           }
+#ifdef IS_PMEM
           clflush((char*)&dir->_[x+chunk_size/2], sizeof(void*)*chunk_size/2);
+#endif
 #ifndef INPLACE
           for (unsigned i = 0; i < chunk_size/2; ++i) {
             dir->_[x+i] = s[0];
           }
+#ifdef IS_PMEM
           clflush((char*)&dir->_[x], sizeof(void*)*chunk_size/2);
+#endif
 #endif
         }
     while (!dir->Release()) {
@@ -261,10 +292,14 @@ RETRY:
             _dir->_[2*i+1] = d[i];
           }
         }
+#ifdef IS_PMEM
         clflush((char*)&_dir->_[0], sizeof(Segment*)*_dir->capacity);
         clflush((char*)&_dir, sizeof(Directory));
+#endif
         dir = _dir;
+#ifdef IS_PMEM
         clflush((char*)&dir, sizeof(void*));
+#endif
         delete dir_old;
         // TODO: requiered to do this atomically
       }
@@ -277,7 +312,9 @@ RETRY:
     // Insert(key, value);
     goto STARTOVER;
   } else {
+#ifdef IS_PMEM
     clflush((char*)&dir->_[x]->_[y], 64);
+#endif
   }
 }
 
@@ -289,7 +326,9 @@ bool CCEH::InsertOnly(Key_t& key, Value_t value) {
 
   auto ret = dir->_[x]->Insert(key, value, y, key_hash);
   if (ret == 0) {
+#ifdef IS_PMEM
     clflush((char*)&dir->_[x]->_[y], 64);
+#endif
     return true;
   }
 
@@ -390,7 +429,9 @@ bool CCEH::Recovery(void) {
     i = i+stride;
   }
   if (recovered) {
+#ifdef IS_PMEM
     clflush((char*)&dir->_[0], sizeof(void*)*dir->capacity);
+#endif
   }
   return recovered;
 }

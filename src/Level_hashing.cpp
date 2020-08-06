@@ -70,10 +70,14 @@ RETRY:
         std::unique_lock<std::shared_mutex> lock(mutex[f_idx/locksize]);
 	if(buckets[i][f_idx].token[j] == 0){
           buckets[i][f_idx].slot[j].value = value;
+#ifdef IS_PMEM
           mfence();
+#endif
           buckets[i][f_idx].slot[j].key = key;
 	  buckets[i][f_idx].token[j] = 1;
+#ifdef IS_PMEM
 	  clflush((char*)&buckets[i][f_idx], sizeof(Node));
+#endif
 	  level_item_num[i]++;
           return;
         }
@@ -82,10 +86,14 @@ RETRY:
         std::unique_lock<std::shared_mutex> lock(mutex[s_idx/locksize]);
 	if(buckets[i][s_idx].token[j] == 0){
           buckets[i][s_idx].slot[j].value = value;
+#ifdef IS_PMEM
           mfence();
+#endif
           buckets[i][s_idx].slot[j].key = key;
 	  buckets[i][s_idx].token[j] = 1;
+#ifdef IS_PMEM
 	  clflush((char*)&buckets[i][s_idx], sizeof(Node));
+#endif
 	  level_item_num[i]++;
           return;
         }
@@ -127,10 +135,14 @@ RETRY:
 #endif
         if(empty_loc != -1){
           buckets[1][f_idx].slot[empty_loc].value = value;
+#ifdef IS_PMEM
           mfence();
+#endif
           buckets[1][f_idx].slot[empty_loc].key = key;
 	  buckets[1][f_idx].token[empty_loc] = 1;
+#ifdef IS_PMEM
 	  clflush((char*)&buckets[1][f_idx], sizeof(Node));
+#endif
 	  level_item_num[1]++;
           resizing_lock = 0;
           return;
@@ -148,10 +160,14 @@ RETRY:
 #endif
         if(empty_loc != -1){
           buckets[1][s_idx].slot[empty_loc].value = value;
+#ifdef IS_PMEM
           mfence();
+#endif
           buckets[1][s_idx].slot[empty_loc].key = key;
 	  buckets[1][s_idx].token[empty_loc] = 1;
+#ifdef IS_PMEM
 	  clflush((char*)&buckets[1][s_idx], sizeof(Node));
+#endif
 	  level_item_num[1]++;
           resizing_lock = 0;
           return;
@@ -187,7 +203,9 @@ void LevelHashing::resize(void) {
   if(!interim_level_buckets){
 	  perror("The expanding fails");
   }
+#ifdef IS_PMEM
   clflush((char*)&interim_level_buckets, sizeof(Node));
+#endif
 
   uint64_t new_level_item_num = 0;
   uint64_t old_idx;
@@ -208,12 +226,16 @@ void LevelHashing::resize(void) {
           {
             interim_level_buckets[f_idx].slot[j].value = value;
 #ifndef BATCH
+#ifdef IS_PMEM
             mfence();
+#endif
 #endif
             interim_level_buckets[f_idx].slot[j].key = key;
 	    interim_level_buckets[f_idx].token[j] = 1;
 #ifndef BATCH
+#ifdef IS_PMEM
 	    clflush((char*)&interim_level_buckets[f_idx], sizeof(Node));
+#endif
 #endif
             insertSuccess = 1;
 	    new_level_item_num++;
@@ -223,12 +245,16 @@ void LevelHashing::resize(void) {
           {
             interim_level_buckets[s_idx].slot[j].value = value;
 #ifndef BATCH
+#ifdef IS_PMEM
             mfence();
+#endif
 #endif
             interim_level_buckets[s_idx].slot[j].key = key;
 	    interim_level_buckets[s_idx].token[j] = 1;
 #ifndef BATCH
+#ifdef IS_PMEM
 	    clflush((char*)&interim_level_buckets[s_idx], sizeof(Node));
+#endif
 #endif
             insertSuccess = 1;
 	    new_level_item_num++;
@@ -238,15 +264,19 @@ void LevelHashing::resize(void) {
 
 	buckets[1][old_idx].token[i] = 0;
 #ifndef BATCH
+#ifdef IS_PMEM
 	clflush((char*)&buckets[1][old_idx].token[i], sizeof(uint8_t));
+#endif
 #endif
       }
     }
   }
 
 #ifdef BATCH
+#ifdef IS_PMEM
   clflush((char*)&buckets[1][0],sizeof(Node)*pow(2,levels-1));
   clflush((char*)&interim_level_buckets[0], sizeof(Node)*new_addr_capacity);
+#endif
 #endif
 
 
@@ -296,18 +326,28 @@ cuck_timer.Start();
       for(j=0; j<ASSOC_NUM; j++){
 	  if(buckets[level_num][jdx].token[j] == 0){
           buckets[level_num][jdx].slot[j].value = m_value;
+#ifdef IS_PMEM
           mfence();
+#endif
           buckets[level_num][jdx].slot[j].key = m_key;
 	  buckets[level_num][jdx].token[j] = 1;
+#ifdef IS_PMEM
 	  clflush((char*)&buckets[level_num][jdx], sizeof(Node));
+#endif
 	  buckets[level_num][idx].token[i] = 0;
+#ifdef IS_PMEM
 	  clflush((char*)&buckets[level_num][idx].token[i], sizeof(uint8_t));
+#endif
 
 	  buckets[level_num][idx].slot[i].value = value;
+#ifdef IS_PMEM
           mfence();
+#endif
           buckets[level_num][idx].slot[i].key = key;
 	  buckets[level_num][idx].token[i] = 1;
+#ifdef IS_PMEM
 	  clflush((char*)&buckets[level_num][idx], sizeof(Node));
+#endif
 	  level_item_num[level_num]++;
 
           if((jdx/locksize) != (idx/locksize)) delete lock[1];
@@ -353,12 +393,18 @@ int LevelHashing::b2t_movement(uint64_t idx){
         lock = new std::unique_lock<std::shared_mutex>(mutex[f_idx/locksize]);
       if(buckets[0][f_idx].token[j] == 0){
         buckets[0][f_idx].slot[j].value = value;
+#ifdef IS_PMEM
         mfence();
+#endif
         buckets[0][f_idx].slot[j].key = key;
 	buckets[0][f_idx].token[j] = 1;
+#ifdef IS_PMEM
 	clflush((char*)&buckets[0][f_idx], sizeof(Node));
+#endif
 	buckets[1][idx].token[i] = 0;
+#ifdef IS_PMEM
 	clflush((char*)&buckets[1][idx].token[i], sizeof(uint8_t));
+#endif
 	level_item_num[0]++;
 	level_item_num[1]--;
 
@@ -371,12 +417,18 @@ int LevelHashing::b2t_movement(uint64_t idx){
 
       if(buckets[0][s_idx].token[j] == 0){
         buckets[0][s_idx].slot[j].value = value;
+#ifdef IS_PMEM
         mfence();
+#endif
         buckets[0][s_idx].slot[j].key = key;
 	buckets[0][s_idx].token[j] = 1;
+#ifdef IS_PMEM
 	clflush((char*)&buckets[0][s_idx], sizeof(Node));
+#endif
 	buckets[1][idx].token[i] = 0;
+#ifdef IS_PMEM
 	clflush((char*)&buckets[0][s_idx].token[j], sizeof(uint8_t));
+#endif
 
 	level_item_num[0]++;
 	level_item_num[1]--;

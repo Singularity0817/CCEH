@@ -6,6 +6,7 @@
 #include "util/pair.h"
 #include "util/timer.h"
 
+//#define IS_PMEM
 class Hash {
   public:
     Hash(void) = default;
