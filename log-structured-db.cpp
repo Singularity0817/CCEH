@@ -24,11 +24,12 @@
 
 using namespace std;
 
-#define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
+//#define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
+#define LOG_DIR_PATH "/mnt/pmem/zwh_test/logDB/"
 mutex cout_lock;
 const size_t InsertSize = 100*1024*1024;
 const int BatchSize = 1024;
-const int ServerNum = 1;
+const int ServerNum = 32;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
 const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
@@ -42,8 +43,11 @@ inline uint64_t GetTimeNsec()
     return nowtime.tv_sec * 1000000000 + nowtime.tv_nsec;
 }
 
-#define CORES 16
-int cores_id[CORES] = {0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23};
+#define CORES 39
+int cores_id[CORES] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+	40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59};
+//#define CORES 16
+//int cores_id[CORES] = {0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23};
 static int core_num = 0;
 
 void PinCore(const char *name) {
