@@ -29,7 +29,7 @@ using namespace std;
 mutex cout_lock;
 const size_t InsertSize = 100*1024*1024;
 const int BatchSize = 1024;
-const int ServerNum = 32;
+const int ServerNum = 1;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
 const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
@@ -211,14 +211,14 @@ void db_server(db_server_param *p)
 
 struct db_open_param
 {
-    myDB *db;
+    myDB **db;
     string *log_path;
-    db_open_param(myDB *_db, string *_log_path) :
+    db_open_param(myDB **_db, string *_log_path) :
         db(_db), log_path(_log_path) {}
 };
 
 void db_recover(db_open_param *p) {
-    db = new myDB(false, (p->log_path)->c_str());
+    *(p->db) = new myDB(false, (p->log_path)->c_str());
 }
 
 int main(int argc, char *argv[]){
@@ -306,13 +306,14 @@ int main(int argc, char *argv[]){
         fflush(stdout);
     } else {
         cout << "Reading exiting DBs." << endl;
-        myDB* dbs[ServerNum];
+        myDB **dbs;
+        dbs = (myDB **)malloc(ServerNum*sizeof(myDB *));
         string *log_paths[ServerNum];
         db_open_param *openParams[ServerNum];
         thread db_open_threads[ServerNum];
         for (int i = 0; i < ServerNum; i++) {
             log_paths[i] = new string(LOG_DIR_PATH+std::to_string(i)+".log");
-            openParams[i] = new db_open_param(dbs[i], log_paths[i]);
+            openParams[i] = new db_open_param(dbs+i, log_paths[i]);
         }
         struct timespec time_start, time_end;
         {
@@ -331,7 +332,7 @@ int main(int argc, char *argv[]){
         fflush(stdout);
         int failSearch = 0;
         std::default_random_engine re(time(0));
-        std::uniform_int_distribution<Key_t> u(0, insertSize-1);
+        std::uniform_int_distribution<Key_t> u(0, InsertSize-1);
         uint64_t get_time_span = 0;
         uint64_t get_time_max = 0, get_time_min = ~0, get_time_this;
         unsigned itemstoget = 1000000;
@@ -346,12 +347,12 @@ int main(int argc, char *argv[]){
             if (get_time_this > get_time_max) get_time_max = get_time_this;
             if (get_time_this < get_time_min) get_time_min = get_time_this;
             if(strcmp(ret, ConstValue[((key-key%ServerNum)/ServerNum)%2]) != 0) {
-                wrongget++;
+                failSearch++;
                 cout << "Wrong value for key " << key << " : " << ret << endl;
             }
         }
         std::cout << "Avg Get Lat: " << get_time_span/(double)itemstoget << "ns, max " << get_time_max << "ns, min " << get_time_min << "ns." << std::endl;
-        cout << "Wrong get num " << wrongget << endl;
+        cout << "Wrong get num " << failSearch << endl;
         zExecute(mem_command);
         fflush(stdout);
     }
