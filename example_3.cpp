@@ -158,7 +158,7 @@ class myDB
         //moodycamel::ConcurrentQueue<struct Pair *> request_queue;
 };
 
-int main(){
+int main(int argc, char *argv[]){
     const size_t initialSize = 1024*16*4;
     const size_t insertSize = 100*1024*1024;
     
@@ -169,7 +169,8 @@ int main(){
     std::cout << " command is :" << mem_command << std::endl;
     zExecute(mem_command);
 
-    bool create = false;
+    bool create = true;
+    if (argc == 2 && argv[1][0] == 'r') create = false;
     if (create) {
         //CCEH* HashTable = new CCEH();
         cout << "Creating a new DB." << endl;

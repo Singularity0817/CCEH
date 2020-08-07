@@ -13,8 +13,8 @@
 #include "util/pair.h"
 #include <time.h>
 #include <random>
-//#include "src/CCEH.h"
-#include "src/Level_hashing.h"
+#include "src/CCEH.h"
+//#include "src/Level_hashing.h"
 //#include "src/cuckoo_hash.h"
 std::string zExecute(const std::string& cmd) {
     std::array<char, 128> buffer;
@@ -39,9 +39,9 @@ int main(){
     std::cout << " command is :" << mem_command << std::endl;
     zExecute(mem_command);
 
-    //CCEH* HashTable = new CCEH();
+    CCEH* HashTable = new CCEH();
     //CuckooHash* HashTable = new CuckooHash(1024*1024);
-    LevelHashing* HashTable = new LevelHashing(10);
+    //LevelHashing* HashTable = new LevelHashing(10);
     zExecute(mem_command);
     /*
     u_int64_t* keys = new u_int64_t[insertSize];
