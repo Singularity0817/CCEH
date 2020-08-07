@@ -79,10 +79,13 @@ class myDB
                 log->create(log_path, EstimateLogSize);
                 uint64_t log_size = log->get_wal_size();
             } else {
+                cout_lock.lock();
+                cout << "Recovering db from log " << log_path << endl;
+                cout_lock.unlock();
                 log->open(log_path);
                 void *log_data_handler = log->get_data_handler();
                 uint64_t log_size = log->get_wal_data_size();
-                cout << "Log size is " << log_size << endl;
+                //cout << "Log size is " << log_size << endl;
                 uint64_t ancho = 0;
                 size_t value_size = 0;
                 unsigned counter = 0;
@@ -206,6 +209,18 @@ void db_server(db_server_param *p)
     }
 }
 
+struct db_open_param
+{
+    myDB *db;
+    string *log_path;
+    db_open_param(myDB *_db, string *_log_path) :
+        db(_db), log_path(_log_path) {}
+};
+
+void db_recover(db_open_param *p) {
+    db = new myDB(false, (p->log_path)->c_str());
+}
+
 int main(int argc, char *argv[]){
     pid_t pid = getpid();
     printf("Process ID %d\n", pid);
@@ -290,14 +305,25 @@ int main(int argc, char *argv[]){
         zExecute(mem_command);
         fflush(stdout);
     } else {
-        cout << "Reading an exiting DB." << endl;
-        /*
-        myDB* db;
+        cout << "Reading exiting DBs." << endl;
+        myDB* dbs[ServerNum];
+        string *log_paths[ServerNum];
+        db_open_param *openParams[ServerNum];
+        thread db_open_threads[ServerNum];
+        for (int i = 0; i < ServerNum; i++) {
+            log_paths[i] = new string(LOG_DIR_PATH+std::to_string(i)+".log");
+            openParams[i] = new db_open_param(dbs[i], log_paths[i]);
+        }
         struct timespec time_start, time_end;
         {
         IPMWatcher write_watcher("write");
         clock_gettime(CLOCK_REALTIME, &time_start);
-        db = new myDB(create);
+        for (int i = 0; i < ServerNum; i++) {
+            db_open_threads[i] = thread(db_recover, openParams[i]);
+        }
+        for (int i = 0; i < ServerNum; i++) {
+            db_open_threads[i].join();
+        }
         clock_gettime(CLOCK_REALTIME, &time_end);
         }
         cout << "Recover time " << ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec)) << "ns." << endl;
@@ -311,23 +337,23 @@ int main(int argc, char *argv[]){
         unsigned itemstoget = 1000000;
         Key_t key;
         for(unsigned i=0; i<itemstoget; i++){
-        //auto ret = HashTable->Get(keys[i]);
-        //key = i;
-        key = u(re);
-        clock_gettime(CLOCK_REALTIME, &time_start);
-        auto ret = db->Get(key);
-        clock_gettime(CLOCK_REALTIME, &time_end);
-        get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
-        //cout << "Value for key " << key << " is " << ret << endl;
-        get_time_span += get_time_this;
-        if (get_time_this > get_time_max) get_time_max = get_time_this;
-        if (get_time_this < get_time_min) get_time_min = get_time_this;
+            key = u(re);
+            clock_gettime(CLOCK_REALTIME, &time_start);
+            auto ret = dbs[key%ServerNum]->Get(key);
+            clock_gettime(CLOCK_REALTIME, &time_end);
+            get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
+            get_time_span += get_time_this;
+            if (get_time_this > get_time_max) get_time_max = get_time_this;
+            if (get_time_this < get_time_min) get_time_min = get_time_this;
+            if(strcmp(ret, ConstValue[((key-key%ServerNum)/ServerNum)%2]) != 0) {
+                wrongget++;
+                cout << "Wrong value for key " << key << " : " << ret << endl;
+            }
         }
         std::cout << "Avg Get Lat: " << get_time_span/(double)itemstoget << "ns, max " << get_time_max << "ns, min " << get_time_min << "ns." << std::endl;
-        //printf("failedSearch: %d\n", failSearch);
+        cout << "Wrong get num " << wrongget << endl;
         zExecute(mem_command);
         fflush(stdout);
-        */
     }
     return 0;
 }
