@@ -117,6 +117,8 @@ class CCEH : public Hash {
       posix_memalign(&ret, 64, size);
       return ret;
     }
+    uint64_t insert_time = 0;
+    uint64_t rehash_time = 0;
 
   private:
     size_t global_depth;

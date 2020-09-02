@@ -183,10 +183,68 @@ public:
         zExecute("rm -f " + file_name_);
     }
 
+    void Checkpoint() {
+        metrics_after_ = Profiler();
+        for (int i = 0; i < metrics_before_.size(); ++i) {
+            auto& info_before = metrics_before_[i];
+            auto& info_after  = metrics_after_[i];
+            IPMMetric metric(info_before, info_after);
+            std::string res;
+            char buffer[1024];
+            sprintf(buffer, "\033[34m%s | Read from IMC | Write from IMC | Read DIMM | Write DIMM |   RA   |   WA   |\n", info_before.dimm_name.c_str());
+            res += buffer;
+            sprintf(buffer, "  MB  | %13.4f | %14.4f | %9.4f | %10.4f | %6.2f | %6.2f |", // Read: %6.2f MB/s, Write: %6.2f MB/s", 
+                    metric.GetByteReadFromIMC()/1024.0/1024.0,
+                    metric.GetByteWriteFromIMC() /1024.0/1024.0,
+                    metric.GetByteReadToDIMM() /1024.0/1024.0,
+                    metric.GetByteWriteToDIMM() /1024.0/1024.0,
+                    (double) metric.GetByteReadToDIMM() / metric.GetByteReadFromIMC(),
+                    (double) metric.GetByteWriteToDIMM() / metric.GetByteWriteFromIMC()
+                    // write_throughput
+                    );
+            res += buffer;
+            res += "\033[0m\n";
+            printf("%s", res.c_str());
+        }   
+        //printf("\033[32mDestroy IPMWatcher.\n\033[0m\n");
+        fflush(nullptr);
+        zExecute("rm -f " + file_name_);
+    }
+
+    double CheckWriteAmplification() {
+        metrics_after_ = Profiler();
+        if (metrics_before_.size() > 1) {
+            printf("Error, more than one DIMM is recorded.\n");
+            exit(1);
+        } else {
+            auto& info_before = metrics_before_[0];
+            auto& info_after  = metrics_after_[0];
+            IPMMetric metric(info_before, info_after);
+            double wa = (double) metric.GetByteWriteToDIMM() / metric.GetByteWriteFromIMC();
+            zExecute("rm -f " + file_name_);
+            return wa;
+        }
+    }
+
+    uint64_t CheckDataWriteToDIMM() {
+        metrics_after_ = Profiler();
+        if (metrics_before_.size() > 1) {
+            printf("Error, more than one DIMM is recorded.\n");
+            exit(1);
+        } else {
+            auto& info_before = metrics_before_[0];
+            auto& info_after  = metrics_after_[0];
+            IPMMetric metric(info_before, info_after);
+            uint64_t dm = metric.GetByteWriteToDIMM();
+            zExecute("rm -f " + file_name_);
+            return dm;
+        }
+    }
+
     std::vector<IPMInfo> Profiler() const {
         std::vector<IPMInfo> infos;
         zExecute("/opt/intel/ipmwatch/bin64/ipmwatch -l >" + file_name_);
-        std::string results = zExecute("grep -w \'DIMM.\' " + file_name_);
+        std::string results = zExecute("grep -w \'DIMM1\' " + file_name_);
         std::stringstream ss(results);
         while (!ss.eof()) {
             std::string res;

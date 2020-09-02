@@ -15,6 +15,7 @@
 #include "util/pair.h"
 #include <time.h>
 #include <random>
+#include <unordered_map>
 #include "wal.h"
 #include "util/concurrentqueue.h"
 #include "util/ipmwatcher.h"
@@ -27,7 +28,7 @@ using namespace std;
 //#define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
 #define LOG_DIR_PATH "/mnt/pmem/zwh_test/logDB/"
 mutex cout_lock;
-const size_t InsertSize = 1000*1024*1024;
+const size_t InsertSize = 100*1024*1024;
 const int BatchSize = 1024;
 const int ServerNum = 1;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
@@ -67,13 +68,35 @@ void PinCore(const char *name) {
     cout_lock.unlock();
 }
 
+class my_unordered_map
+{
+    public:
+        my_unordered_map() {
+            m = new unordered_map<Key_t, Value_t>;
+        }
+        ~my_unordered_map() {
+            delete m;
+        }
+        inline void Insert(Key_t key, Value_t value) {
+            m->insert(pair<Key_t, Value_t>(key, value));
+        }
+        inline Value_t Get(Key_t key) {
+            return m->at(key);
+        }
+        uint64_t insert_time = 0;
+        uint64_t rehash_time = 0;
+    private:
+        unordered_map<Key_t, Value_t> *m;
+};
+
 class myDB
 {
     public:
         myDB(bool create, const char *log_path) {
-            index = new CCEH();
+            //index = new CCEH();
             //index = new CuckooHash(1024*1024);
             //index = new LevelHashing(10);
+            index = new my_unordered_map();
             log = new Wal();
             if (create) {
                 log->create(log_path, EstimateLogSize);
@@ -173,10 +196,11 @@ class myDB
             cout << "    index update time " << index->insert_time << ", rehash time " << index->rehash_time << endl;
         }
     private:
-        CCEH* index;
+        //CCEH* index;
         //CuckooHash* index;
         //LevelHashing* index;
         //Hash* index;
+        my_unordered_map *index;
         Wal* log;
         uint64_t insert_prepare_time = 0;
         uint64_t insert_log_append_time = 0;
@@ -266,7 +290,7 @@ int main(int argc, char *argv[]){
         size_t new_fs, old_fs = 0;
         clock_gettime(CLOCK_REALTIME, &time_start);
         old_progress_checkpoint = time_start.tv_sec*1000000000+time_start.tv_nsec;
-        uint64_t put_time_start = old_progress_checkpoint;
+        uint64_t put_start_time = old_progress_checkpoint;
         start = true;
         while (finishSize < InsertSize) {
             new_fs = finishSize;
@@ -276,10 +300,8 @@ int main(int argc, char *argv[]){
                 //clock_gettime(CLOCK_REALTIME, &time_middle);
                 new_progress_checkpoint = GetTimeNsec();
                 //double span = (time_middle.tv_sec - time_start.tv_sec) + (time_middle.tv_nsec - time_start.tv_nsec)/1000000000.0;
-                printf("Progress %2.1lf%%, ops %.1lf wa %.2lf avg_ops %.1lf\n", new_progress, 
-                    (new_fs-old_fs)/(double)((new_progress_checkpoint-old_progress_checkpoint)/1000000000.0), 
-                    (double) write_watcher.CheckDataWriteToDIMM()/(new_fs*16.0),
-                    new_fs/(double)((new_progress_checkpoint-put_time_start)/1000000000.0));
+                printf("Progress %2.1lf%%, ops %.1lf wa %.2lf avg_ops %.1lf\n", new_progress, (new_fs-old_fs)/(double)((new_progress_checkpoint-old_progress_checkpoint)/1000000000.0), 
+                    (double) write_watcher.CheckDataWriteToDIMM()/(new_fs*16.0), new_fs/(double)((new_progress_checkpoint-put_start_time)/1000000000.0));
                 //write_watcher.Checkpoint();
                 fflush(stdout);
                 old_progress = new_progress;

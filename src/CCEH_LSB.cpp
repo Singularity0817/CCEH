@@ -7,8 +7,16 @@
 #include "util/persist.h"
 #include "util/hash.h"
 #include "src/CCEH.h"
+#include <time.h>
 
 extern size_t perfCounter;
+
+inline uint64_t GetTimeNsec()
+{
+    struct timespec nowtime;
+    clock_gettime(CLOCK_REALTIME, &nowtime);
+    return nowtime.tv_sec * 1000000000 + nowtime.tv_nsec;
+}
 
 int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
 #ifdef INPLACE
@@ -153,7 +161,9 @@ CCEH::CCEH(size_t initCap)
 }
 
 CCEH::~CCEH(void)
-{ }
+{
+    delete dir;
+}
 
 void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x, Segment** s) {
   int depth_diff = global_depth - local_depth;
@@ -190,6 +200,7 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
 }
 
 void CCEH::Insert(Key_t& key, Value_t value) {
+  uint64_t insert_start = GetTimeNsec();
 STARTOVER:
   auto key_hash = h(&key, sizeof(key));
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
@@ -200,10 +211,12 @@ RETRY:
   auto ret = target->Insert(key, value, y, key_hash);
 
   if (ret == 1) {
-    timer.Start();
+    //timer.Start();
+    uint64_t split_start = GetTimeNsec();
     Segment** s = target->Split();
-    timer.Stop();
-    breakdown += timer.GetSeconds();
+    rehash_time += (GetTimeNsec() - split_start);
+    //timer.Stop();
+    //breakdown += timer.GetSeconds();
     if (s == nullptr) {
       // another thread is doing split
       goto RETRY;
@@ -265,6 +278,7 @@ RETRY:
     clflush((char*)&dir->_[x]->_[y], 64);
 #endif
   }
+  insert_time += (GetTimeNsec() - insert_start);
 }
 
 // This function does not allow resizing

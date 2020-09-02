@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 #ifndef HASH_INTERFACE_H_
 #define HASH_INTERFACE_H_
 

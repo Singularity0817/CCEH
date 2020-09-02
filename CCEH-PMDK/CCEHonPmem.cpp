@@ -10,14 +10,15 @@
 #include <thread>
 #include "util/pmm_util.h"
 #include "util/perf.h"
+#include <mutex>
 using namespace std;
 
 const char *const CCEH_PATH = "/mnt/pmem/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 100*1024*1024;
-const int ServerNum = 1;
+const size_t InsertSize = 1000*1024*1024;
+const int ServerNum = 4;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
-const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
+const Value_t ConstValue[2] = {1, 2};
 
 inline uint64_t GetTimeNsec()
 {
@@ -63,6 +64,9 @@ std::string zExecute(const std::string& cmd) {
     return result;
 }
 
+int ReadyCount = 0;
+bool ThreadStart = false;
+
 struct server_thread_param {
     int id;
     CCEH *db;
@@ -71,42 +75,101 @@ struct server_thread_param {
     server_thread_param(int _id, CCEH *_db, bool *_start, int *_readyCount) :
         id(_id), db(_db), start(_start), readyCount(_readyCount) {}
 };
-
+size_t finishSize = 0;
 void ServerThread(struct server_thread_param *p)
 {
+    PinCore("worker");
     int id = p->id;
     CCEH *db = p->db;
     Key_t key;
-    __sync_fetch_and_add(p->readyCount, 1);
-    while(!*(p->start)) {}
+    uint64_t counter = 0;
+    __sync_fetch_and_add(&ReadyCount, 1);
+    std::cout << "worker " << id << " ready. " << ReadyCount << std::endl;
+    while(ThreadStart != true) {fflush(stdout);}
+    std::cout << "worker " << id << " begin to put " << std::endl;
     for (unsigned i = 0; i < InsertSizePerServer; i++) {
-        db->Insert(i*ServerNum+id, &ConstValue[i%2]);
+        Key_t key = i*ServerNum+id;
+        db->Insert(key, ConstValue[i%2]);
+        counter++;
+        if (counter % 10000 == 0) {
+            __sync_fetch_and_add(&finishSize, counter);
+            counter = 0;
+            //printf("Finish item num %llu\n", finishSize);
+        }
     }
+    __sync_fetch_and_add(&finishSize, counter);
 }
 
 int main(int argc, char* argv[]){
+    PinCore("main");
     pid_t pid = getpid();
-    printf("Process ID %d\n", pid);
+    //printf("Process ID %d\n", pid);
     std::string mem_command = "cat /proc/" + std::to_string(pid) + "/status >> mem_dump";
     zExecute(mem_command);
 	int failSearch = 0;
     debug_perf_ppid();
-	struct timespec start, end;
+	struct timespec time_start, time_end, time_middle;
 	uint64_t elapsed = 0;
     uint64_t restart_time = 0;
-    printf("Hashtable");fflush(stdout);
+    printf("Hashtable thread num %d\n", ServerNum);fflush(stdout);
     CCEH *HashTables[ServerNum];
-    clock_gettime(CLOCK_REALTIME, &start);
+    clock_gettime(CLOCK_REALTIME, &time_start);
     for (int i = 0; i < ServerNum; i++) {
         string table_path = CCEH_PATH+std::to_string(i)+".data";
+        std::cout << "Creating table with path " << table_path << std::endl;
         HashTables[i] = new CCEH(table_path.c_str());
     }
-    clock_gettime(CLOCK_REALTIME, &end);
-    restart_time = ((end.tv_sec - start.tv_sec) * 1000000000 + (end.tv_nsec - start.tv_nsec));
+    clock_gettime(CLOCK_REALTIME, &time_end);
+    restart_time = ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
     std::cout << "Boot time: " << restart_time << "ns." << std::endl;
     zExecute(mem_command);
 	printf("!");fflush(stdout);
 	if(!strcmp(argv[1], "-r")){
+        uint64_t rtime[1000];
+        for (int i = 0; i < 1000; i++) rtime[i] = 0;
+        std::cout << "Begin to get..." << std::endl;
+        {
+	    fflush(stdout);
+        default_random_engine re(time(0));
+        uniform_int_distribution<Key_t> u(0, InsertSize-1);
+        elapsed = 0;
+	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
+        unsigned entries_to_get = 100*1024*1024;
+        Key_t t_key;
+        util::IPMWatcher watcher("cceh_get");
+        debug_perf_switch();
+        size_t fail_get = 0;
+        for(unsigned i = 0; i < entries_to_get; i++){
+            t_key = u(re);
+            clock_gettime(CLOCK_REALTIME, &time_start);
+            auto ret = HashTables[t_key%ServerNum]->Get(t_key);
+            clock_gettime(CLOCK_REALTIME, &time_end);
+            r_span = ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
+	        elapsed += r_span;
+	        if (r_span > r_max) r_max = r_span;
+	        if (r_span < r_min) r_min = r_span;
+            if (ret == NONE) fail_get++;
+            if (r_span > 10000) {
+                rtime[999]++;
+            } else {
+                rtime[r_span/10]++;
+            }
+            if (i%1000 == 0) {
+                printf("\rprogress %u", i);
+                fflush(stdout);
+            }
+        }
+        debug_perf_stop();
+        std::cout << std::endl << "Get Entries: " << entries_to_get << ", fail get " << fail_get << ", size " 
+            << ((double)(entries_to_get*sizeof(size_t)*2))/1024/1024 << "MB, time: " << elapsed 
+            << "ns, avg_time " << ((double)elapsed)/entries_to_get << "ns, ops: " 
+            << entries_to_get/(((double)elapsed)/1000000000)/1024/1024 << "Mops, min " << r_min 
+            << ", max " << r_max << std::endl;
+        }
+        std::cout << "Read Lat PDF" << std::endl;
+        for (int i = 0; i < 1000; i++) {
+            printf("%d %llu\n", i*10, rtime[i]);
+        }
         return 0;
 	}else if(!strcmp(argv[1], "-w")){
         return 0;
@@ -120,19 +183,37 @@ int main(int argc, char* argv[]){
         }
         std::cout << "Begin to put..." << std::endl;fflush(stdout);
         {
-        util::IPMWatcher watcher("cceh_put");
         for (int i = 0; i < ServerNum; i++) {
             server_threads[i] = thread(ServerThread, params[i]);
         }
-        while (readyCount < ServerNum) {}
+        while (ReadyCount < ServerNum) {
+            fflush(stdout);
+        }
         cout << "All servers are ready." << endl;
-        clock_gettime(CLOCK_REALTIME, &start);
-        start = true;
+        clock_gettime(CLOCK_REALTIME, &time_start);
+        ThreadStart = true;
+        util::IPMWatcher watcher("cceh_put");
+        double new_progress, old_progress = 0;
+        while (finishSize < InsertSize) {
+            //std::cout << finishSize << " : " << InsertSize << std::endl;
+            size_t fs = finishSize;
+            new_progress = fs/(double)InsertSize*100;
+            if (new_progress - old_progress >= 1) {
+                //printf("\rProgress %2.1lf%%", new_progress);
+                clock_gettime(CLOCK_REALTIME, &time_middle);
+                double span = (time_middle.tv_sec - time_start.tv_sec) + (time_middle.tv_nsec - time_start.tv_nsec)/1000000000.0;
+                printf("Progress %2.1lf%%, ops %.1lf, wa %.2lf\n", new_progress, fs/(double)span, (double) watcher.CheckDataWriteToDIMM()/(fs*16.0));
+                //write_watcher.Checkpoint();
+                fflush(stdout);
+                old_progress = new_progress;
+            }
+            fflush(stdout);
+        }
+        clock_gettime(CLOCK_REALTIME, &time_end);
+        elapsed = ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
         for (int i = 0; i < ServerNum; i++) {
             server_threads[i].join();
         }
-        clock_gettime(CLOCK_REALTIME, &end);
-        elapsed = ((end.tv_sec - start.tv_sec) * 1000000000 + (end.tv_nsec - start.tv_nsec));
         /*
         for(Key_t i = 0; i < InserS;i++) {
             clock_gettime(CLOCK_REALTIME, &start);
@@ -154,22 +235,24 @@ int main(int argc, char* argv[]){
         uniform_int_distribution<Key_t> u(0, InsertSize-1);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = 1024*1024;
+        unsigned entries_to_get = 1000*1024*1024;
         Key_t t_key;
+        size_t fail_get = 0;
         util::IPMWatcher watcher("cceh_get");
         debug_perf_switch();
         for(unsigned i = 0; i < entries_to_get; i++){
             t_key = u(re);
-            clock_gettime(CLOCK_REALTIME, &start);
+            clock_gettime(CLOCK_REALTIME, &time_start);
             auto ret = HashTables[t_key%ServerNum]->Get(t_key);
-            clock_gettime(CLOCK_REALTIME, &end);
-            r_span = ((end.tv_sec - start.tv_sec) * 1000000000 + (end.tv_nsec - start.tv_nsec));
+            clock_gettime(CLOCK_REALTIME, &time_end);
+            r_span = ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
 	        elapsed += r_span;
 	        if (r_span > r_max) r_max = r_span;
 	        if (r_span < r_min) r_min = r_span;
+            if (ret == NONE) fail_get++;
         }
         debug_perf_stop();
-        std::cout << "Get Entries: " << entries_to_get << ", size " 
+        std::cout << "Get Entries: " << entries_to_get << ", fail get" << fail_get << ", size " 
             << ((double)(entries_to_get*sizeof(size_t)*2))/1024/1024 << "MB, time: " << elapsed 
             << "ns, avg_time " << ((double)elapsed)/entries_to_get << "ns, ops: " 
             << entries_to_get/(((double)elapsed)/1000000000)/1024/1024 << "Mops, min " << r_min 

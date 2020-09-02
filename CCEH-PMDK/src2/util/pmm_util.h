@@ -526,13 +526,28 @@ public:
         fflush(nullptr);
     }
 
+    uint64_t CheckDataWriteToDIMM() {
+        metrics_after_ = Profiler();
+        if (metrics_before_.size() > 1) {
+            printf("Error, more than one DIMM is recorded.\n");
+            exit(1);
+        } else {
+            auto& info_before = metrics_before_[0];
+            auto& info_after  = metrics_after_[0];
+            IPMMetric metric(info_before, info_after);
+            uint64_t dm = metric.GetByteWriteToDIMM();
+            zExecute("rm -f " + file_name_);
+            return dm;
+        }
+    }
+
     std::vector<IPMInfo> Profiler() const {
         std::vector<IPMInfo> infos;
         //std::cout << "Entering Profiler() " << std::endl;
         //Env::Default()->Execute("/opt/intel/ipmwatch/bin64/ipmwatch -l >" + file_name_);
         //std::string results = Env::Default()->Execute("grep -w \'DIMM.\' " + file_name_);
         zExecute("/opt/intel/ipmwatch/bin64/ipmwatch -l >" + file_name_);
-        std::string results = zExecute("grep -w \'DIMM.\' " + file_name_);
+        std::string results = zExecute("grep -w \'DIMM1\' " + file_name_);
         /*
         FILE *fp = NULL;
         std::string command1 = "/opt/intel/ipmwatch/bin64/ipmwatch -l >";

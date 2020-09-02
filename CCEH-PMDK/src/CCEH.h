@@ -160,7 +160,7 @@ public:
   }
   void doubling_pmem(){
     D_RW(dir_pmem)->capacity = capacity;
-    printf("Doubling to %d\n",capacity); fflush(stdout);
+    //printf("Doubling to %d\n",capacity); fflush(stdout);
     POBJ_REALLOC(pop, &segments, TOID(struct Segment_pmem),capacity*sizeof(TOID(struct Segment_pmem)));
     D_RW(dir_pmem)->segments = segments;
     for(size_t i=capacity/2; i<capacity; i++){
@@ -225,13 +225,16 @@ class CCEH {
     size_t global_depth;
     int init_pmem(const char* path){
 
+  size_t pool_size = PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
+
 	if(access(path, F_OK) != 0){
-          pop = pmemobj_create(path, LAYOUT, PMEMOBJ_MIN_POOL*2048, 0666);
+          pop = pmemobj_create(path, LAYOUT, pool_size, 0666);
           //pop = pmemobj_create(path, LAYOUT, 8*1024*1024*1024, 0666);
           if(pop==NULL){
    		perror(path);
    		exit(-1);
           }
+    printf("Pmem pool size %.1llfGB\n", (double)pool_size/(1024*1024*1024));
   	  cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
 	  POBJ_ALLOC(pop, &dir_pmem, struct Directory_pmem, sizeof(struct Directory_pmem), NULL,NULL);
 	  D_RW(cceh_pmem)->directories = dir_pmem;
