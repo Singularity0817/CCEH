@@ -24,8 +24,8 @@
 
 using namespace std;
 
-//#define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
-#define LOG_DIR_PATH "/mnt/pmem/zwh_test/logDB/"
+#define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
+//#define LOG_DIR_PATH "/mnt/pmem/zwh_test/logDB/"
 mutex cout_lock;
 const size_t InsertSize = 1000*1024*1024;
 const int BatchSize = 1024;

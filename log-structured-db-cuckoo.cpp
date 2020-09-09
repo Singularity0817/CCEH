@@ -25,18 +25,18 @@
 
 using namespace std;
 
-//#define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
-#define LOG_DIR_PATH "/mnt/pmem/zwh_test/logDB/"
+#define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
+//#define LOG_DIR_PATH "/mnt/pmem/zwh_test/logDB/"
 mutex cout_lock;
-const size_t InsertSize = 100*1024*1024;
+const size_t InsertSize = 1000*1024*1024;
 const int BatchSize = 1024;
-const int ServerNum = 1;
+const int ServerNum = 8;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
 const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
 const size_t EstimateLogSize = 512+(LogEntrySize*InsertSizePerServer)+512*1024*1024;
 //const size_t EstimateLogSize = 512*1024*1024;
-
+const size_t testTimes = 1;
 inline uint64_t GetTimeNsec()
 {
     struct timespec nowtime;
@@ -44,11 +44,11 @@ inline uint64_t GetTimeNsec()
     return nowtime.tv_sec * 1000000000 + nowtime.tv_nsec;
 }
 
-#define CORES 39
-int cores_id[CORES] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-	40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59};
-//#define CORES 16
-//int cores_id[CORES] = {0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23};
+//#define CORES 39
+//int cores_id[CORES] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+//	40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59};
+#define CORES 16
+int cores_id[CORES] = {0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23};
 static int core_num = 0;
 
 void PinCore(const char *name) {
@@ -212,11 +212,11 @@ struct db_server_param
 {
     int id;
     myDB *db;
-    bool *start;
-    int *readyCount;
-    size_t *finishSize;
-    db_server_param(int _id, myDB* _db, bool *_start, int *_readyCount, size_t *_finishSize)
-        : id(_id), db(_db), start(_start), readyCount(_readyCount), finishSize(_finishSize) {}
+    std::atomic<bool> *start;
+    std::atomic<int> *readyCount;
+    size_t finishSize;
+    db_server_param(int _id, myDB* _db, std::atomic<bool> *_start, std::atomic<int> *_readyCount)
+        : id(_id), db(_db), start(_start), readyCount(_readyCount), finishSize(0) {}
 };
 
 void db_server(db_server_param *p)
@@ -224,20 +224,24 @@ void db_server(db_server_param *p)
     PinCore("server");
     myDB *db = p->db;
     int id = p->id;
-    size_t *finishSize = p->finishSize;
+    //size_t *finishSize = p->finishSize;
     vector<Pair> pairs_to_put;
-    __sync_fetch_and_add(p->readyCount, 1);
+    //__sync_fetch_and_add(p->readyCount, 1);
+    p->readyCount->fetch_add(1);
     cout_lock.lock();
     cout << "Server " << id << " is ready with db " << db << "." << endl;
     cout_lock.unlock();
-    while(!(*(p->start))) {}
-    for (unsigned i = 0; i < InsertSizePerServer/BatchSize; i++) {
-        pairs_to_put.clear();
-        for (unsigned j = 0; j < BatchSize; j++) {
-            pairs_to_put.push_back(Pair((i*BatchSize+j)*ServerNum+id, ConstValue[j%2]));
+    while(!(p->start->load(std::memory_order_relaxed))) {}
+    for (unsigned t = 0; t < testTimes; t++) {
+        for (unsigned i = 0; i < InsertSizePerServer/BatchSize; i++) {
+            pairs_to_put.clear();
+            for (unsigned j = 0; j < BatchSize; j++) {
+                pairs_to_put.push_back(Pair((i*BatchSize+j)*ServerNum+id, ConstValue[j%2]));
+            }
+            db->BatchInsert(&pairs_to_put);
+            //__sync_fetch_and_add(finishSize, BatchSize);
+            p->finishSize += BatchSize;
         }
-        db->BatchInsert(&pairs_to_put);
-        __sync_fetch_and_add(finishSize, BatchSize);
     }
     db->print_put_stat();
 }
@@ -268,14 +272,14 @@ int main(int argc, char *argv[]){
         myDB* dbs[ServerNum];
         db_server_param* dbParams[ServerNum];
         thread server_threads[ServerNum];
-        bool start = false;
-        int readyCount = 0;
+        std::atomic<bool> start(false);
+        std::atomic<int> readyCount(0);
         size_t finishSize = 0;
         for (int i = 0; i < ServerNum; i++) {
             std::string log_path = LOG_DIR_PATH+std::to_string(i)+".log";
             cout << "Log file for server " << i << " is " << log_path << endl;
             dbs[i] = new myDB(create, log_path.c_str());
-            dbParams[i] = new db_server_param(i, dbs[i], &start, &readyCount, &finishSize);
+            dbParams[i] = new db_server_param(i, dbs[i], &start, &readyCount);
             server_threads[i] = thread(db_server, dbParams[i]);
         }
         zExecute(mem_command);
@@ -285,23 +289,31 @@ int main(int argc, char *argv[]){
         while (readyCount < ServerNum) {};
         cout << "All servers are ready." << endl;
         {
-        IPMWatcher write_watcher("write");
+        //IPMWatcher write_watcher("write");
         uint64_t old_progress_checkpoint, new_progress_checkpoint;
         size_t new_fs, old_fs = 0;
         clock_gettime(CLOCK_REALTIME, &time_start);
         old_progress_checkpoint = time_start.tv_sec*1000000000+time_start.tv_nsec;
         uint64_t put_start_time = old_progress_checkpoint;
         start = true;
+        double wa = 0;
+        printf("runtime    progress    ops    wa    avg_ops\n");
         while (finishSize < InsertSize) {
+            finishSize = 0;
+            for (int i = 0; i < ServerNum; i++) {
+                finishSize += dbParams[i]->finishSize;
+            }
             new_fs = finishSize;
             new_progress = new_fs/(double)InsertSize*100;
-            if (new_progress - old_progress >= 1) {
-                //printf("\rProgress %2.1lf%%", new_progress);
-                //clock_gettime(CLOCK_REALTIME, &time_middle);
-                new_progress_checkpoint = GetTimeNsec();
+            new_progress_checkpoint = GetTimeNsec();
+            if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
+            //if (new_progress - old_progress >= 0.1) {
+                //new_progress_checkpoint = GetTimeNsec();
                 //double span = (time_middle.tv_sec - time_start.tv_sec) + (time_middle.tv_nsec - time_start.tv_nsec)/1000000000.0;
-                printf("Progress %2.1lf%%, ops %.1lf wa %.2lf avg_ops %.1lf\n", new_progress, (new_fs-old_fs)/(double)((new_progress_checkpoint-old_progress_checkpoint)/1000000000.0), 
-                    (double) write_watcher.CheckDataWriteToDIMM()/(new_fs*16.0), new_fs/(double)((new_progress_checkpoint-put_start_time)/1000000000.0));
+                printf("%.1lf    %2.1lf%%    %.1lf    %.2lf    %.1lf\n", 
+                    (new_progress_checkpoint - put_start_time)/1000000000.0,
+                    new_progress, (new_fs-old_fs)/(double)((new_progress_checkpoint-old_progress_checkpoint)/1000000000.0), 
+                    /*(double) write_watcher.CheckDataWriteToDIMM()/(new_fs*16.0)*/wa, new_fs/(double)((new_progress_checkpoint-put_start_time)/1000000000.0));
                 //write_watcher.Checkpoint();
                 fflush(stdout);
                 old_progress = new_progress;
@@ -330,7 +342,7 @@ int main(int argc, char *argv[]){
         unsigned wrongget = 0;
         Key_t key;
         {
-        IPMWatcher write_watcher("read");
+        //IPMWatcher write_watcher("read");
         for(unsigned i=0; i<itemstoget; i++){
             key = u(re);
             clock_gettime(CLOCK_REALTIME, &time_start);
@@ -364,7 +376,7 @@ int main(int argc, char *argv[]){
         }
         struct timespec time_start, time_end;
         {
-        IPMWatcher write_watcher("write");
+        //IPMWatcher write_watcher("write");
         clock_gettime(CLOCK_REALTIME, &time_start);
         for (int i = 0; i < ServerNum; i++) {
             db_open_threads[i] = thread(db_recover, openParams[i]);
