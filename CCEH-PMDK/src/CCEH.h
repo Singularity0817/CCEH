@@ -234,7 +234,7 @@ class CCEH {
    		perror(path);
    		exit(-1);
           }
-    printf("Pmem pool size %.1llfGB\n", (double)pool_size/(1024*1024*1024));
+    printf("Pmem pool size %.1lfGB\n", (double)pool_size/(1024.0*1024*1024));
   	  cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
 	  POBJ_ALLOC(pop, &dir_pmem, struct Directory_pmem, sizeof(struct Directory_pmem), NULL,NULL);
 	  D_RW(cceh_pmem)->directories = dir_pmem;

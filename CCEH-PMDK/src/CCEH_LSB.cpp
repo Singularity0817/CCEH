@@ -336,6 +336,7 @@ CCEH::CCEH(size_t initCap, const char* path)
 {
   if(init_pmem(path)){
   constructor(log2(initCap));
+  std::cout << "initCap " << initCap << " depth " << log2(initCap) << std::endl;
   size_t capacity = dir->capacity;
   for(unsigned i=0;i<capacity;i++){
      dir->_[i] = new Segment(pop, global_depth);

@@ -547,7 +547,7 @@ public:
         //Env::Default()->Execute("/opt/intel/ipmwatch/bin64/ipmwatch -l >" + file_name_);
         //std::string results = Env::Default()->Execute("grep -w \'DIMM.\' " + file_name_);
         zExecute("/opt/intel/ipmwatch/bin64/ipmwatch -l >" + file_name_);
-        std::string results = zExecute("grep -w \'DIMM1\' " + file_name_);
+        std::string results = zExecute("grep -w \'DIMM0\' " + file_name_);
         /*
         FILE *fp = NULL;
         std::string command1 = "/opt/intel/ipmwatch/bin64/ipmwatch -l >";

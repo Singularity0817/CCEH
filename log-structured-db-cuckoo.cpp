@@ -28,15 +28,18 @@ using namespace std;
 #define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
 //#define LOG_DIR_PATH "/mnt/pmem/zwh_test/logDB/"
 mutex cout_lock;
-const size_t InsertSize = 1000*1024*1024;
+const size_t InsertSize = 100*1024*1024;
 const int BatchSize = 1024;
-const int ServerNum = 8;
+const int ServerNum = 1;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
 const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
 const size_t EstimateLogSize = 512+(LogEntrySize*InsertSizePerServer)+512*1024*1024;
 //const size_t EstimateLogSize = 512*1024*1024;
 const size_t testTimes = 1;
+
+#define RESERVE_MODE
+
 inline uint64_t GetTimeNsec()
 {
     struct timespec nowtime;
@@ -73,6 +76,9 @@ class my_unordered_map
     public:
         my_unordered_map() {
             m = new unordered_map<Key_t, Value_t>;
+#ifdef RESERVE_MODE
+            m->reserve(InsertSize/ServerNum);
+#endif
         }
         ~my_unordered_map() {
             delete m;
@@ -80,8 +86,14 @@ class my_unordered_map
         inline void Insert(Key_t key, Value_t value) {
             m->insert(pair<Key_t, Value_t>(key, value));
         }
-        inline Value_t Get(Key_t key) {
-            return m->at(key);
+        inline int Get(Key_t key, Value_t *pos) {
+            auto res = m->find(key);
+            if (res == m->end()) {
+                return 0;
+            } else {
+                *pos = res->second;
+                return 1;
+            }
         }
         uint64_t insert_time = 0;
         uint64_t rehash_time = 0;
@@ -180,15 +192,18 @@ class myDB
             insert_index_insert_time += (GetTimeNsec() - third_time);
             //cout << "End Batch" << endl;
         }
-        inline Value_t Get(Key_t &key) {
-            uint64_t offset = reinterpret_cast<uint64_t>(index->Get(key));
-            void *data_handler = log->get_data_offset(offset);
-            Key_t g_key = *((Key_t *)data_handler);
-            if (g_key != key) {
-                cout << "Get the wrong key " << g_key << " : " << key << endl;
-                exit(1);
+        inline int Get(Key_t &key, Value_t *value) {
+            Value_t pos;
+            int res = index->Get(key, &pos);
+            if (res == 0) {
+                //cannot find the target key in the index
+                return 0;
+            } else {
+                //read target key from log
+                void *data_handler = log->get_data_offset(reinterpret_cast<uint64_t>(pos));
+                *value = (Value_t)((char *)data_handler+sizeof(Key_t)+sizeof(size_t));
+                return 1;
             }
-            return (Value_t)((char *)data_handler+sizeof(Key_t)+sizeof(size_t));
 
         }
         inline void print_put_stat() {
@@ -306,14 +321,15 @@ int main(int argc, char *argv[]){
             new_fs = finishSize;
             new_progress = new_fs/(double)InsertSize*100;
             new_progress_checkpoint = GetTimeNsec();
-            if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
-            //if (new_progress - old_progress >= 0.1) {
+            //if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
+            if (new_progress - old_progress >= 0.1) {
                 //new_progress_checkpoint = GetTimeNsec();
                 //double span = (time_middle.tv_sec - time_start.tv_sec) + (time_middle.tv_nsec - time_start.tv_nsec)/1000000000.0;
                 printf("%.1lf    %2.1lf%%    %.1lf    %.2lf    %.1lf\n", 
                     (new_progress_checkpoint - put_start_time)/1000000000.0,
                     new_progress, (new_fs-old_fs)/(double)((new_progress_checkpoint-old_progress_checkpoint)/1000000000.0), 
-                    /*(double) write_watcher.CheckDataWriteToDIMM()/(new_fs*16.0)*/wa, new_fs/(double)((new_progress_checkpoint-put_start_time)/1000000000.0));
+                    /*(double) write_watcher.CheckDataWriteToDIMM()/(new_fs*16.0)*/wa, 
+                    new_fs/(double)((new_progress_checkpoint-put_start_time)/1000000000.0));
                 //write_watcher.Checkpoint();
                 fflush(stdout);
                 old_progress = new_progress;
@@ -340,17 +356,21 @@ int main(int argc, char *argv[]){
         uint64_t get_time_max = 0, get_time_min = ~0, get_time_this;
         unsigned itemstoget = 1000000;
         unsigned wrongget = 0;
+        unsigned failedget = 0;
         Key_t key;
+        Value_t value;
         {
         //IPMWatcher write_watcher("read");
         for(unsigned i=0; i<itemstoget; i++){
             key = u(re);
             clock_gettime(CLOCK_REALTIME, &time_start);
-            auto ret = dbs[key%ServerNum]->Get(key);
+            auto ret = dbs[key%ServerNum]->Get(key, &value);
             clock_gettime(CLOCK_REALTIME, &time_end);
             get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
             //cout << "Value for key " << key << " is " << ret << endl;
-            if(strcmp(ret, ConstValue[((key-key%ServerNum)/ServerNum)%2]) != 0) {
+            if (ret == 0) {
+                failedget++;
+            } else if (strcmp(value, ConstValue[((key-key%ServerNum)/ServerNum)%2]) != 0) {
                 wrongget++;
                 cout << "Wrong value for key " << key << " : " << ret << endl;
             }
@@ -360,7 +380,8 @@ int main(int argc, char *argv[]){
         }
         }
         std::cout << "Avg Get Lat: " << get_time_span/(double)itemstoget << "ns, max " << get_time_max << "ns, min " << get_time_min << "ns." << std::endl;
-        cout << "Wrong get num " << wrongget << endl;
+        cout << "Wrong get num " << wrongget << endl
+            << "Fail get num " << failedget << endl;
         zExecute(mem_command);
         fflush(stdout);
     } else {
@@ -389,19 +410,22 @@ int main(int argc, char *argv[]){
         cout << "Recover time " << ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0) << " s." << endl;
         zExecute(mem_command);
         fflush(stdout);
-        int failSearch = 0;
+        int wrongget = 0, failedget = 0;
+        cout << "Begin get test." << std::endl;
         std::default_random_engine re(time(0));
-        std::uniform_int_distribution<Key_t> u(0, InsertSize-1);
+        //std::uniform_int_distribution<Key_t> u(0, InsertSize-1);
+        std::uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         uint64_t get_time_span = 0;
         uint64_t get_time_max = 0, get_time_min = ~0, get_time_this;
         unsigned itemstoget = 100*1024*1024;
         uint64_t rtime[1000];
         for (int i = 0; i < 1000; i++) rtime[i] = 0;
         Key_t key;
+        Value_t value;
         for(unsigned i=0; i<itemstoget; i++){
             key = u(re);
             clock_gettime(CLOCK_REALTIME, &time_start);
-            auto ret = dbs[key%ServerNum]->Get(key);
+            auto ret = dbs[key%ServerNum]->Get(key, &value);
             clock_gettime(CLOCK_REALTIME, &time_end);
             get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
             get_time_span += get_time_this;
@@ -412,8 +436,10 @@ int main(int argc, char *argv[]){
             } else {
                 rtime[get_time_this/10]++;
             }
-            if(strcmp(ret, ConstValue[((key-key%ServerNum)/ServerNum)%2]) != 0) {
-                failSearch++;
+            if (ret == 0) {
+                failedget++;
+            } else if(strcmp(value, ConstValue[((key-key%ServerNum)/ServerNum)%2]) != 0) {
+                wrongget++;
                 cout << "Wrong value for key " << key << " : " << ret << endl;
             }
             if (i%10000 == 0) {
@@ -422,7 +448,8 @@ int main(int argc, char *argv[]){
             }
         }
         std::cout << std::endl << "Avg Get Lat: " << get_time_span/(double)itemstoget << "ns, max " << get_time_max << "ns, min " << get_time_min << "ns." << std::endl;
-        cout << "Wrong get num " << failSearch << endl;
+        cout << "Wrong get num " << wrongget << endl
+            << "Failed get num " << failedget << endl;
         zExecute(mem_command);
         fflush(stdout);
         std::cout << "Get time CDF." << std::endl;

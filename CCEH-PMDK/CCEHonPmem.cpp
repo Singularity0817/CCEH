@@ -123,7 +123,8 @@ int main(int argc, char* argv[]){
     for (int i = 0; i < ServerNum; i++) {
         string table_path = CCEH_PATH+std::to_string(i)+".data";
         std::cout << "Creating table with path " << table_path << std::endl;
-        HashTables[i] = new CCEH(table_path.c_str());
+        //HashTables[i] = new CCEH(table_path.c_str());
+        HashTables[i] = new CCEH((size_t)pow(2, 19), table_path.c_str());
     }
     clock_gettime(CLOCK_REALTIME, &time_end);
     restart_time = ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
@@ -137,7 +138,8 @@ int main(int argc, char* argv[]){
         {
 	    fflush(stdout);
         default_random_engine re(time(0));
-        uniform_int_distribution<Key_t> u(0, InsertSize-1);
+        //uniform_int_distribution<Key_t> u(0, InsertSize-1);
+        uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
         unsigned entries_to_get = 100*1024*1024;
@@ -207,17 +209,19 @@ int main(int argc, char* argv[]){
         printf("runtime    progress    ops    wa    avg_ops\n");
         while (finishSize < InsertSize) {
             //std::cout << finishSize << " : " << InsertSize << std::endl;
-            size_t fs = finishSize;
-            new_progress = fs/(double)InsertSize*100;
+            size_t fs = finishSize.load(std::memory_order_acquire);
+            new_progress = fs/(double)InsertSize*100.0;
             new_progress_checkpoint = GetTimeNsec();
-            if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
-            //if (new_progress - old_progress >= 0.1) {
+            //if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
+            if (new_progress - old_progress >= 0.1) {
                 //printf("\rProgress %2.1lf%%", new_progress);
                 //clock_gettime(CLOCK_REALTIME, &time_middle);
                 //double span = (time_middle.tv_sec - time_start.tv_sec) + (time_middle.tv_nsec - time_start.tv_nsec)/1000000000.0;
                 printf("%.1lf    %2.1lf%%    %.1lf    %.2lf    %.1lf\n", 
-                    (new_progress_checkpoint - put_start)/1000000000.0, new_progress, (fs-old_fs)/(double)(new_progress_checkpoint - old_progress_checkpoint), 
-                    /*(double) watcher.CheckDataWriteToDIMM()/(fs*16.0)*/0.0, fs/(double)(new_progress_checkpoint - put_start));
+                    (new_progress_checkpoint - put_start)/1000000000.0, new_progress, 
+                    (fs-old_fs)/(double)((new_progress_checkpoint - old_progress_checkpoint)/1000000000.0), 
+                    /*(double) watcher.CheckDataWriteToDIMM()/(fs*16.0)*/0.0, 
+                    fs/(double)((new_progress_checkpoint - put_start)/1000000000.0));
                 //write_watcher.Checkpoint();
                 fflush(stdout);
                 old_progress = new_progress;
@@ -250,6 +254,7 @@ int main(int argc, char* argv[]){
 	    fflush(stdout);
         default_random_engine re(time(0));
         uniform_int_distribution<Key_t> u(0, InsertSize-1);
+        //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
         unsigned entries_to_get = 10*1024*1024;
