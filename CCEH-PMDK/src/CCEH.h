@@ -225,7 +225,7 @@ class CCEH {
     size_t global_depth;
     int init_pmem(const char* path){
 
-  size_t pool_size = PMEMOBJ_MIN_POOL*512*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
+  size_t pool_size = PMEMOBJ_MIN_POOL*1024*12;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
 
 	if(access(path, F_OK) != 0){
           pop = pmemobj_create(path, LAYOUT, pool_size, 0666);

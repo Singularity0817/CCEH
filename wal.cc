@@ -21,11 +21,13 @@ Wal::Wal()
 	wal_size = 0;
     time_span_data_write = 0;
     time_span_metadata_write = 0;
+	self_buffer = (char *)malloc(WAL_BUFFER_SIZE*sizeof(char));
 }
 
 Wal::~Wal()
 {
-	handler = NULL;
+	close();
+	//handler = NULL;
 #ifdef WAL_STATISTIC
     cout << "Total time span " << time_span_data_write+time_span_metadata_write 
         << "s, Data write time span " << time_span_data_write << ", meta data write time span " << time_span_metadata_write << ", "
@@ -54,7 +56,7 @@ int Wal::create(const char *path, size_t poolsize)
 {
 	cout << "Initializing WAL....." << endl;
 	size_t mapped_len;
-	handler = pmem_map_file(path, poolsize, PMEM_FILE_CREATE, 0666, &mapped_len, &is_pmem);
+	handler = pmem_map_file(path, poolsize, PMEM_FILE_CREATE, 0777, &mapped_len, &is_pmem);
 	wal_size = (u_int64_t)poolsize;
 	pmem_memset(handler, 0, poolsize, PMEM_F_MEM_NONTEMPORAL);
 	pmem_drain();
@@ -70,15 +72,36 @@ int Wal::create(const char *path, size_t poolsize)
 
 void Wal::close()
 {
+	//persist the buffer before shutdown
+	persistBuffer();
 	pmem_unmap(handler, wal_size);
 	handler = NULL;
 }
 
-u_int64_t Wal::append(const void *buf, const size_t& count)
+void Wal::flush()
 {
-#ifdef WAL_STATISTIC
-    clock_gettime(CLOCK_REALTIME, &time_data_write_start);
-#endif
+	persistBuffer();
+}
+
+void Wal::persistBuffer()
+{
+	if (used_buffer_size != 0) {
+		if (current_pos + used_buffer_size >= wal_size) {
+			cerr << "Write WAL failed as the wal is full." << endl;
+			exit(1);
+		}
+		pmem_memcpy((u_int8_t *)handler+current_pos, (char *)self_buffer, used_buffer_size, PMEM_F_MEM_NONTEMPORAL);
+		wal_persist(is_pmem, (u_int8_t *)handler+current_pos, used_buffer_size);
+		current_pos += used_buffer_size;
+		pmem_memcpy((u_int8_t *)handler+WAL_CURR_POS_BEGIN+current_pos_pos*8, (char *)(&current_pos), 8, PMEM_F_MEM_NONTEMPORAL);
+		wal_persist(is_pmem, (u_int8_t *)handler+WAL_CURR_POS_BEGIN+current_pos_pos*8, 8);
+		//std::cout << "Persist wal buffer with size " << used_buffer_size << ", move wal head to " << current_pos << std::endl;
+		used_buffer_size = 0;
+	}
+}
+
+u_int64_t Wal::persistData(const void *buf, const size_t& count)
+{
 	u_int64_t write_point = current_pos;
 	if (current_pos + count >= wal_size) {
 		cerr << "Write WAL failed as the wal is full." << endl;
@@ -86,46 +109,62 @@ u_int64_t Wal::append(const void *buf, const size_t& count)
 	}
 	pmem_memcpy((u_int8_t *)handler+current_pos, (char *)buf, count, PMEM_F_MEM_NONTEMPORAL);
 	wal_persist(is_pmem, (u_int8_t *)handler+current_pos, count);
-#ifdef WAL_STATISTIC
-    clock_gettime(CLOCK_REALTIME, &time_data_write_end);
-    time_span_data_write += ((time_data_write_end.tv_sec - time_data_write_start.tv_sec) + (time_data_write_end.tv_nsec - time_data_write_start.tv_nsec)/1000000000.0);
-    clock_gettime(CLOCK_REALTIME, &time_metadata_write_start);
-#endif
 	current_pos += count;
-	//current_pos_pos = (current_pos_pos + 1) % WAL_CURR_POS_NUM;
 	pmem_memcpy((u_int8_t *)handler+WAL_CURR_POS_BEGIN+current_pos_pos*8, (char *)(&current_pos), 8, PMEM_F_MEM_NONTEMPORAL);
 	wal_persist(is_pmem, (u_int8_t *)handler+WAL_CURR_POS_BEGIN+current_pos_pos*8, 8);
-	//pmem_memcpy_persist((u_int8_t *)handler+WAL_CURR_POS_POS, (char *)(&current_pos_pos), 1);
-#ifdef WAL_STATISTIC
-    clock_gettime(CLOCK_REALTIME, &time_metadata_write_end);
-    time_span_metadata_write += ((time_metadata_write_end.tv_sec - time_metadata_write_start.tv_sec) + (time_metadata_write_end.tv_nsec - time_metadata_write_start.tv_nsec)/1000000000.0);
-#endif
 	return write_point;
 }
-/*
-int Wal::append_batch(list<const void *> *bufs, list<size_t> *counts, list<u_int64_t> *return_pos)
+
+u_int64_t Wal::append(const void *buf, const size_t& count)
 {
-	if (bufs->size() != counts->size()) {
-		cout << "Inconsistent wal batch list " << bufs->size() << " : " << counts->size() << endl;
+	if (used_buffer_size + count > WAL_BUFFER_SIZE) {
+		//need to first persist the buffer content
+		persistBuffer();
+		if (count > WAL_BUFFER_SIZE) {
+			//persist the data directly
+			return persistData(buf, count);
+		} else {
+			//copy the data to wal buffer
+			memcpy(self_buffer+used_buffer_size, buf, count);
+			uint64_t write_point = current_pos + used_buffer_size;
+			used_buffer_size += count;
+			/*
+			if (used_buffer_size >= WAL_FLUSH_SIZE) {
+				persistBuffer();
+			}
+			*/
+			return write_point;
+		}
+	} else {
+		//just copy data to the log buffer
+		memcpy(self_buffer+used_buffer_size, buf, count);
+		uint64_t write_point = current_pos + used_buffer_size;
+		used_buffer_size += count;
+		/*
+		//check if we should persist the buffer now
+		if (used_buffer_size >= WAL_FLUSH_SIZE) {
+			persistBuffer();
+		}
+		*/
+		return write_point;
+	}
+}
+
+char *Wal::get_entry(int64_t pos) 
+{
+	if ((uint64_t)pos < current_pos) {
+		//printf("target entry in log.\n");
+		return ((char *)handler + pos);
+	} else if ((uint64_t)pos < current_pos + used_buffer_size) {
+		//printf("target entry in buffer.\n");
+		return (self_buffer+((uint64_t)pos-current_pos));
+	} else {
+		printf("ERROR: Get log pos out of range %lu : %lu + %lu\n", 
+			(uint64_t)pos, current_pos, used_buffer_size);
 		exit(1);
 	}
-	unsigned int batch_size = bufs->size();
-	for (int i = 0; i < batch_size; i++) {
-		if (current_pos + counts->front() >= wal_size) {
-			cerr << "Write WAL failed as the wal is full." << endl;
-			exit(1);
-		}
-		pmem_memcpy((u_int8_t *)handler+current_pos, (char *)(bufs->front()), counts->front(), PMEM_F_MEM_NONTEMPORAL);
-		return_pos->push_back(current_pos);
-		current_pos += counts->front();
-		bufs->pop_front();
-		counts->pop_front();
-	}
-	pmem_drain();
-	pmem_memcpy_persist((u_int8_t *)handler+WAL_CURR_POS, (char *)(&current_pos), 8);
-	return 1;
 }
-*/
+
 void Wal::rewind()
 {
 	pmem_memset_persist(handler, 0, WAL_MAGIC_NUM_SIZE);
@@ -151,17 +190,6 @@ u_int64_t Wal::get_wal_size()
 	return wal_size;
 }
 
-void *Wal::get_data_offset(u_int64_t offset) {
-    return (void *)((char *)handler+offset);
-}
-
-void *Wal::get_data_handler() {
-    return (void *)((char *)handler+WAL_HEADER_SIZE);
-}
-
-u_int64_t Wal::get_wal_data_size() {
-    return (get_current_writepoint()-WAL_HEADER_SIZE);
-}
 /*
 #include "./util.h"
 

@@ -13,10 +13,12 @@
 #include <mutex>
 using namespace std;
 
+//#define RESERVER_SPACE
+
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
 const size_t InsertSize = 1000*1024*1024;
-const int ServerNum = 8;
+const int ServerNum = 1;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
 
@@ -123,8 +125,11 @@ int main(int argc, char* argv[]){
     for (int i = 0; i < ServerNum; i++) {
         string table_path = CCEH_PATH+std::to_string(i)+".data";
         std::cout << "Creating table with path " << table_path << std::endl;
-        //HashTables[i] = new CCEH(table_path.c_str());
+#ifndef RESERVER_SPACE
+        HashTables[i] = new CCEH(table_path.c_str());
+#else
         HashTables[i] = new CCEH((size_t)pow(2, 19), table_path.c_str());
+#endif
     }
     clock_gettime(CLOCK_REALTIME, &time_end);
     restart_time = ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec));

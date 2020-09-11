@@ -28,9 +28,9 @@ using namespace std;
 #define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
 //#define LOG_DIR_PATH "/mnt/pmem/zwh_test/logDB/"
 mutex cout_lock;
-const size_t InsertSize = 100*1024*1024;
+const size_t InsertSize = 1000*1024*1024;
 const int BatchSize = 1024;
-const int ServerNum = 1;
+const int ServerNum = 8;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
 const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
@@ -144,8 +144,8 @@ class myDB
             }
         }
         ~myDB() {
-            delete log;
             delete index;
+            delete log;
             //delete request_queue;
         }
         inline void Insert(Key_t &key, Value_t value) {
@@ -240,7 +240,10 @@ void db_server(db_server_param *p)
     myDB *db = p->db;
     int id = p->id;
     //size_t *finishSize = p->finishSize;
-    vector<Pair> pairs_to_put;
+    //vector<Pair> pairs_to_put;
+    //Pair kv_pair;
+    Key_t key;
+    unsigned counter = 0;
     //__sync_fetch_and_add(p->readyCount, 1);
     p->readyCount->fetch_add(1);
     cout_lock.lock();
@@ -248,6 +251,7 @@ void db_server(db_server_param *p)
     cout_lock.unlock();
     while(!(p->start->load(std::memory_order_relaxed))) {}
     for (unsigned t = 0; t < testTimes; t++) {
+        /*
         for (unsigned i = 0; i < InsertSizePerServer/BatchSize; i++) {
             pairs_to_put.clear();
             for (unsigned j = 0; j < BatchSize; j++) {
@@ -257,7 +261,19 @@ void db_server(db_server_param *p)
             //__sync_fetch_and_add(finishSize, BatchSize);
             p->finishSize += BatchSize;
         }
+        */
+        for (unsigned i = 0; i < InsertSizePerServer; i++) {
+            key = i*ServerNum+id;
+            db->Insert(key, ConstValue[i%2]);
+            counter++;
+            if (counter == 1000) {
+                p->finishSize += counter;
+                counter = 0;
+            }
+        }
     }
+    p->finishSize += counter;
+    counter = 0;
     db->print_put_stat();
 }
 
