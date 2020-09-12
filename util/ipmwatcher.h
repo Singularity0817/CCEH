@@ -244,7 +244,7 @@ public:
     std::vector<IPMInfo> Profiler() const {
         std::vector<IPMInfo> infos;
         zExecute("/opt/intel/ipmwatch/bin64/ipmwatch -l >" + file_name_);
-        std::string results = zExecute("grep -w \'DIMM1\' " + file_name_);
+        std::string results = zExecute("grep -w \'DIMM0\' " + file_name_);
         std::stringstream ss(results);
         while (!ss.eof()) {
             std::string res;

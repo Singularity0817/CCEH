@@ -42,6 +42,9 @@ class Wal
 		u_int64_t get_current_writepoint(); //return the position of current writepoint.
 		u_int64_t get_wal_size();
 		void flush();
+		void *get_data_offset(u_int64_t offset);
+        void *get_data_handler();
+        u_int64_t get_wal_data_size();
 		
 	private:
 		void persistBuffer();

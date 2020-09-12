@@ -30,7 +30,7 @@ using namespace std;
 mutex cout_lock;
 const size_t InsertSize = 1000*1024*1024;
 const int BatchSize = 1024;
-const int ServerNum = 8;
+const int ServerNum = 1;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
 const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
@@ -38,7 +38,9 @@ const size_t EstimateLogSize = 512+(LogEntrySize*InsertSizePerServer)+512*1024*1
 //const size_t EstimateLogSize = 512*1024*1024;
 const size_t testTimes = 1;
 
-#define RESERVE_MODE
+//#define RESERVE_MODE
+#define RECORD_WA
+//#define RECORD_AS_PROGRESS
 
 inline uint64_t GetTimeNsec()
 {
@@ -193,18 +195,18 @@ class myDB
             //cout << "End Batch" << endl;
         }
         inline int Get(Key_t &key, Value_t *value) {
-            Value_t pos;
-            int res = index->Get(key, &pos);
+            //Value_t pos;
+            uint64_t pos;
+            int res = index->Get(key, (Value_t *)(&pos));
             if (res == 0) {
                 //cannot find the target key in the index
                 return 0;
             } else {
                 //read target key from log
-                void *data_handler = log->get_data_offset(reinterpret_cast<uint64_t>(pos));
+                void *data_handler = log->get_entry(pos);
                 *value = (Value_t)((char *)data_handler+sizeof(Key_t)+sizeof(size_t));
                 return 1;
             }
-
         }
         inline void print_put_stat() {
             cout << "Insert prepare time " << insert_prepare_time << ", log append time " << insert_log_append_time << ", index insert time " << insert_index_insert_time << endl;
@@ -320,7 +322,9 @@ int main(int argc, char *argv[]){
         while (readyCount < ServerNum) {};
         cout << "All servers are ready." << endl;
         {
-        //IPMWatcher write_watcher("write");
+#ifdef RECORD_WA
+        IPMWatcher write_watcher("write");
+#endif
         uint64_t old_progress_checkpoint, new_progress_checkpoint;
         size_t new_fs, old_fs = 0;
         clock_gettime(CLOCK_REALTIME, &time_start);
@@ -336,15 +340,23 @@ int main(int argc, char *argv[]){
             }
             new_fs = finishSize;
             new_progress = new_fs/(double)InsertSize*100;
+
             new_progress_checkpoint = GetTimeNsec();
-            //if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
+#ifndef RECORD_AS_PROGRESS            
+            if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
+#else
             if (new_progress - old_progress >= 0.1) {
+#endif
                 //new_progress_checkpoint = GetTimeNsec();
                 //double span = (time_middle.tv_sec - time_start.tv_sec) + (time_middle.tv_nsec - time_start.tv_nsec)/1000000000.0;
                 printf("%.1lf    %2.1lf%%    %.1lf    %.2lf    %.1lf\n", 
                     (new_progress_checkpoint - put_start_time)/1000000000.0,
-                    new_progress, (new_fs-old_fs)/(double)((new_progress_checkpoint-old_progress_checkpoint)/1000000000.0), 
-                    /*(double) write_watcher.CheckDataWriteToDIMM()/(new_fs*16.0)*/wa, 
+                    new_progress, (new_fs-old_fs)/(double)((new_progress_checkpoint-old_progress_checkpoint)/1000000000.0),
+#ifdef RECORD_WA
+                    (double) write_watcher.CheckDataWriteToDIMM()/(new_fs*16.0),
+#else
+                    wa,
+#endif
                     new_fs/(double)((new_progress_checkpoint-put_start_time)/1000000000.0));
                 //write_watcher.Checkpoint();
                 fflush(stdout);

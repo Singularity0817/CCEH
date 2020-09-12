@@ -14,6 +14,7 @@
 using namespace std;
 
 //#define RESERVER_SPACE
+#define RECORD_WA
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
@@ -128,7 +129,7 @@ int main(int argc, char* argv[]){
 #ifndef RESERVER_SPACE
         HashTables[i] = new CCEH(table_path.c_str());
 #else
-        HashTables[i] = new CCEH((size_t)pow(2, 19), table_path.c_str());
+        HashTables[i] = new CCEH((size_t)pow(2, 22), table_path.c_str());
 #endif
     }
     clock_gettime(CLOCK_REALTIME, &time_end);
@@ -209,7 +210,9 @@ int main(int argc, char* argv[]){
         uint64_t old_progress_checkpoint = put_start;
         uint64_t new_progress_checkpoint = 0;
         ThreadStart = true;
-        //util::IPMWatcher watcher("cceh_put");
+#ifdef RECORD_WA
+        util::IPMWatcher watcher("cceh_put");
+#endif
         double new_progress, old_progress = 0;
         printf("runtime    progress    ops    wa    avg_ops\n");
         while (finishSize < InsertSize) {
@@ -225,7 +228,11 @@ int main(int argc, char* argv[]){
                 printf("%.1lf    %2.1lf%%    %.1lf    %.2lf    %.1lf\n", 
                     (new_progress_checkpoint - put_start)/1000000000.0, new_progress, 
                     (fs-old_fs)/(double)((new_progress_checkpoint - old_progress_checkpoint)/1000000000.0), 
-                    /*(double) watcher.CheckDataWriteToDIMM()/(fs*16.0)*/0.0, 
+#ifdef RECORD_WA
+                    (double) watcher.CheckDataWriteToDIMM()/(fs*16.0),
+#else
+                    0.00,
+#endif
                     fs/(double)((new_progress_checkpoint - put_start)/1000000000.0));
                 //write_watcher.Checkpoint();
                 fflush(stdout);
