@@ -76,6 +76,7 @@ void Wal::close()
 	persistBuffer();
 	pmem_unmap(handler, wal_size);
 	handler = NULL;
+	free(self_buffer);
 }
 
 void Wal::flush()

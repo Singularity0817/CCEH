@@ -22,15 +22,16 @@
 #include "src/CCEH.h"
 //#include "src/cuckoo_hash.h"
 //#include "src/Level_hashing.h"
+#include "ycsb.h"
 
 using namespace std;
 
 #define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
 //#define LOG_DIR_PATH "/mnt/pmem/zwh_test/logDB/"
 mutex cout_lock;
-const size_t InsertSize = 1000*1024*1024;
+const size_t InsertSize = 1600*1024*1024;
 const int BatchSize = 1024;
-const int ServerNum = 1;
+const int ServerNum = 8;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
 const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
@@ -38,9 +39,10 @@ const size_t EstimateLogSize = 512+(LogEntrySize*InsertSizePerServer)+512*1024*1
 //const size_t EstimateLogSize = 512*1024*1024;
 const size_t testTimes = 1;
 
+//#define YCSB_TEST
 //#define RESERVE_MODE
-#define RECORD_WA
-//#define RECORD_AS_PROGRESS
+//#define RECORD_WA
+#define RECORD_AS_PROGRESS
 
 inline uint64_t GetTimeNsec()
 {
@@ -161,6 +163,17 @@ class myDB
             index->Insert(key, reinterpret_cast<Value_t>(pos));
             free(buffer);
         }
+        inline void Insert(const int64_t &key, size_t value_size, const char *value) {
+            //size_t value_size = strlen(value);
+            int buffer_size = sizeof(Key_t)+sizeof(size_t)+value_size;
+            char *buffer = (char *)malloc(buffer_size);
+            memcpy(buffer, &key, sizeof(int64_t));
+            memcpy(buffer+sizeof(int64_t), &value_size, sizeof(size_t));
+            memcpy(buffer+sizeof(int64_t)+sizeof(size_t), value, value_size);
+            auto pos = log->append(buffer, buffer_size);
+            index->Insert((Key_t)(key), reinterpret_cast<Value_t>(pos));
+            free(buffer);
+        }
         void BatchInsert(vector<Pair> *const pairs) {
             uint64_t put_start = GetTimeNsec();
             int buffer_size = 0;
@@ -208,6 +221,20 @@ class myDB
                 return 1;
             }
         }
+        inline int Get(const int64_t &key, int64_t *value) {
+            //Value_t pos;
+            uint64_t pos;
+            int res = index->Get((Key_t)key, (Value_t *)(&pos));
+            if (res == 0) {
+                //cannot find the target key in the index
+                return 0;
+            } else {
+                //read target key from log
+                void *data_handler = log->get_entry(pos);
+                *value = *((int64_t *)((char *)data_handler+sizeof(int64_t)+sizeof(size_t)));
+                return 1;
+            }
+        }
         inline void print_put_stat() {
             cout << "Insert prepare time " << insert_prepare_time << ", log append time " << insert_log_append_time << ", index insert time " << insert_index_insert_time << endl;
             cout << "    index update time " << index->insert_time << ", rehash time " << index->rehash_time << endl;
@@ -238,7 +265,7 @@ struct db_server_param
 
 void db_server(db_server_param *p)
 {
-    PinCore("server");
+    //PinCore("server");
     myDB *db = p->db;
     int id = p->id;
     //size_t *finishSize = p->finishSize;
@@ -291,8 +318,44 @@ void db_recover(db_open_param *p) {
     *(p->db) = new myDB(false, (p->log_path)->c_str());
 }
 
+#ifdef YCSB_TEST
+using namespace util;
+class DBTest:public KVBase {
+    public:
+        DBTest(){}
+        virtual void Initial(int t_num) {
+            printf("KVTest thread #: %d\n", t_num);
+            if (t_num != ServerNum) {
+                printf("Use t_num the same as SERVERNUM.\n");
+            }
+            size_t estimate_log_size = WAL_HEADER_SIZE+InsertSizePerServer*32;
+            for (int i = 0; i < ServerNum; i++) {
+                std::string log_path = LOG_DIR_PATH+std::to_string(i)+".log";
+                dbs_[i] = new myDB(true, log_path.c_str());
+            }
+        }
+
+        virtual int Put(const int64_t& key, size_t& v_size, const char* value, int tid) {
+            dbs_[tid]->Insert(key, v_size, value);
+            return 1;
+        }
+
+        virtual int Get(const int64_t  key, int64_t* value, int tid) {
+            return dbs_[tid]->Get(key, value);
+        }
+    private:
+        myDB *dbs_[ServerNum];
+};
+
+int main() {
+    DBTest dbtest;
+    Benchmark benchmark(&dbtest);
+    benchmark.Run();
+}
+
+#else
 int main(int argc, char *argv[]){
-    PinCore("main");
+    //PinCore("main");
     pid_t pid = getpid();
     printf("Process ID %d\n", pid);
     std::string mem_command = "cat /proc/" + std::to_string(pid) + "/status >> mem_dump";
@@ -487,5 +550,5 @@ int main(int argc, char *argv[]){
     }
     return 0;
 }
-
+#endif /*YCSB_TEST*/
 	

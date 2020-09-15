@@ -19,8 +19,8 @@ using namespace std;
 #define WAL_CURR_POS_NUM (256 / 8)
 //#define WAL_CURR_POS (WAL_CURR_POS_POS + 8)
 
-#define WAL_BUFFER_SIZE 32768
-#define WAL_FLUSH_SIZE 16384
+#define WAL_BUFFER_SIZE 49152
+#define WAL_FLUSH_SIZE 49152
 
 #define WAL_WRITE_SUCCESS 0
 #define WAL_WRITE_FAILED 1

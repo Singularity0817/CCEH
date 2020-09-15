@@ -11,19 +11,24 @@
 #include "util/pmm_util.h"
 #include "util/perf.h"
 #include <mutex>
+#include "./ycsb.h"
 using namespace std;
 
-//#define RESERVER_SPACE
-#define RECORD_WA
+#define RESERVER_SPACE
+//#define RECORD_WA
+#define YCSB_TEST
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
 const size_t InsertSize = 1000*1024*1024;
-const int ServerNum = 1;
+const int ServerNum = 8;
+const int ReservePow = 22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
 
 const size_t testTimes = 1;
+
+const Value_t _VALUE_ = 168;
 
 inline uint64_t GetTimeNsec()
 {
@@ -83,7 +88,7 @@ struct server_thread_param {
 std::atomic<size_t> finishSize(0);
 void ServerThread(struct server_thread_param *p)
 {
-    PinCore("worker");
+    //PinCore("worker");
     int id = p->id;
     CCEH *db = p->db;
     Key_t key;
@@ -108,9 +113,55 @@ void ServerThread(struct server_thread_param *p)
     //__sync_fetch_and_add(&finishSize, counter);
     finishSize.fetch_add(counter);
 }
+#ifdef YCSB_TEST
+using namespace util;
+class DBTest:public KVBase {
+    public:
+        DBTest(){}
+        virtual void Initial(int t_num) {
+            printf("KVTest thread #: %d\n", t_num);
+            if (t_num != ServerNum) {
+                printf("Use t_num the same as SERVERNUM.\n");
+            }
+            for (int i = 0; i < ServerNum; i++) {
+            string table_path = CCEH_PATH+std::to_string(i)+".data";
+#ifndef RESERVER_SPACE
+                dbs_[i] = new CCEH(table_path.c_str());
+#else
+                dbs_[i] = new CCEH((size_t)pow(2, ReservePow), table_path.c_str());
+#endif
+            }
+        }
 
+        virtual int Put(const int64_t& key, size_t& v_size, const char* value, int tid) {
+            Key_t k = (Key_t)(key);
+            dbs_[tid]->Insert(k, _VALUE_);
+            return 1;
+        }
+
+        virtual int Get(const int64_t  key, int64_t* value, int tid) {
+            Key_t k = (Key_t)key;
+            Value_t v = dbs_[tid]->Get(k);
+            if (v == NONE) {
+                return 0;
+            } else {
+                (*value) = (int64_t)(v);
+                return 1;
+            }
+        }
+    private:
+        CCEH *dbs_[ServerNum];
+};
+
+int main() {
+    DBTest dbtest;
+    Benchmark benchmark(&dbtest);
+    benchmark.Run();
+}
+
+#else
 int main(int argc, char* argv[]){
-    PinCore("main");
+    //PinCore("main");
     pid_t pid = getpid();
     //printf("Process ID %d\n", pid);
     std::string mem_command = "cat /proc/" + std::to_string(pid) + "/status >> mem_dump";
@@ -129,7 +180,7 @@ int main(int argc, char* argv[]){
 #ifndef RESERVER_SPACE
         HashTables[i] = new CCEH(table_path.c_str());
 #else
-        HashTables[i] = new CCEH((size_t)pow(2, 22), table_path.c_str());
+        HashTables[i] = new CCEH((size_t)pow(2, ReservePow), table_path.c_str());
 #endif
     }
     clock_gettime(CLOCK_REALTIME, &time_end);
@@ -299,5 +350,5 @@ int main(int argc, char* argv[]){
         delete HashTables[i];
 	return 0;
 }
-
+#endif
 
