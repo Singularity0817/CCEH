@@ -10,12 +10,13 @@
 
 const int           FLAGS_value_size = 8;
 const size_t        FLAGS_num = 500000000;//10000000;
-const size_t        FLAGS_ycsb_op_num = FLAGS_num / 10;
+const size_t        FLAGS_ycsb_op_num = FLAGS_num / 10 / 8;
 const size_t        FLAGS_reads = 500000000;//10000000;
 const int           FLAGS_thread = 8;
 const size_t        FLAGS_stats_interval = 1000000; 
 const size_t        FLAGS_report_interval = 0;          // Report interval in seconds. if set to 0, we use FLAGS_stats_interval 
-const std::string   FLAGS_benchmarks = "ycsb_load,ycsb_d,ycsb_a,ycsb_b,ycsb_c";
+const std::string   FLAGS_benchmarks = "ycsb_load,ycsb_f";//"ycsb_load,ycsb_d,ycsb_a,ycsb_b,ycsb_c";
+const int           FLAGS_interval_between_benchmarks = 5;
 
 namespace util {
 
@@ -573,6 +574,7 @@ public:
             } 
 
             if (method != nullptr) RunBenchmark(FLAGS_thread, name, method);
+            ::usleep(FLAGS_interval_between_benchmarks * 1000000);
         }
         
         

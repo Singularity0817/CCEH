@@ -16,10 +16,12 @@
 #include <time.h>
 #include <random>
 #include <unordered_map>
+#include <algorithm>
 #include "wal.h"
 #include "util/concurrentqueue.h"
 #include "util/ipmwatcher.h"
 #include "src/CCEH.h"
+#include "robin_hood.h"
 //#include "src/cuckoo_hash.h"
 //#include "src/Level_hashing.h"
 #include "ycsb.h"
@@ -29,18 +31,19 @@ using namespace std;
 #define LOG_DIR_PATH "/mnt/pmem0/zwh_test/logDB/"
 //#define LOG_DIR_PATH "/mnt/pmem/zwh_test/logDB/"
 mutex cout_lock;
-const size_t InsertSize = 1600*1024*1024;
+const size_t InsertSize = 1000*1024*1024;
+const size_t recordInterval = 1024*1024;
 const int BatchSize = 1024;
-const int ServerNum = 8;
+const int ServerNum = 1;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
 const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
 const size_t EstimateLogSize = 512+(LogEntrySize*InsertSizePerServer)+512*1024*1024;
 //const size_t EstimateLogSize = 512*1024*1024;
-const size_t testTimes = 1;
+const size_t testTimes = 2;
 
 //#define YCSB_TEST
-//#define RESERVE_MODE
+#define RESERVE_MODE
 //#define RECORD_WA
 #define RECORD_AS_PROGRESS
 
@@ -79,16 +82,18 @@ class my_unordered_map
 {
     public:
         my_unordered_map() {
-            m = new unordered_map<Key_t, Value_t>;
+            //m = new unordered_map<Key_t, Value_t>;
+            m = new robin_hood::unordered_map<Key_t, Value_t>;
 #ifdef RESERVE_MODE
-            m->reserve(InsertSize/ServerNum);
+            m->reserve(InsertSize/ServerNum*1.0);
 #endif
         }
         ~my_unordered_map() {
             delete m;
         }
         inline void Insert(Key_t key, Value_t value) {
-            m->insert(pair<Key_t, Value_t>(key, value));
+            //m->insert(pair<Key_t, Value_t>(key, value));
+            m->insert(robin_hood::pair<Key_t, Value_t>(key, value));
         }
         inline int Get(Key_t key, Value_t *pos) {
             auto res = m->find(key);
@@ -102,7 +107,8 @@ class my_unordered_map
         uint64_t insert_time = 0;
         uint64_t rehash_time = 0;
     private:
-        unordered_map<Key_t, Value_t> *m;
+        //unordered_map<Key_t, Value_t> *m;
+        robin_hood::unordered_map<Key_t, Value_t> *m;
 };
 
 class myDB
@@ -112,6 +118,8 @@ class myDB
             //index = new CCEH();
             //index = new CuckooHash(1024*1024);
             //index = new LevelHashing(10);
+            insert_buffer_size = sizeof(Key_t)+sizeof(size_t)+sizeof(int64_t);
+            insert_buffer = (char *)malloc(insert_buffer_size);
             index = new my_unordered_map();
             log = new Wal();
             if (create) {
@@ -165,14 +173,14 @@ class myDB
         }
         inline void Insert(const int64_t &key, size_t value_size, const char *value) {
             //size_t value_size = strlen(value);
-            int buffer_size = sizeof(Key_t)+sizeof(size_t)+value_size;
-            char *buffer = (char *)malloc(buffer_size);
-            memcpy(buffer, &key, sizeof(int64_t));
-            memcpy(buffer+sizeof(int64_t), &value_size, sizeof(size_t));
-            memcpy(buffer+sizeof(int64_t)+sizeof(size_t), value, value_size);
-            auto pos = log->append(buffer, buffer_size);
+            //int buffer_size = sizeof(Key_t)+sizeof(size_t)+value_size;
+            //char *buffer = (char *)malloc(buffer_size);
+            memcpy(insert_buffer, &key, sizeof(int64_t));
+            memcpy(insert_buffer+sizeof(int64_t), &value_size, sizeof(size_t));
+            memcpy(insert_buffer+sizeof(int64_t)+sizeof(size_t), value, value_size);
+            auto pos = log->append(insert_buffer, insert_buffer_size);
             index->Insert((Key_t)(key), reinterpret_cast<Value_t>(pos));
-            free(buffer);
+            //free(buffer);
         }
         void BatchInsert(vector<Pair> *const pairs) {
             uint64_t put_start = GetTimeNsec();
@@ -231,7 +239,8 @@ class myDB
             } else {
                 //read target key from log
                 void *data_handler = log->get_entry(pos);
-                *value = *((int64_t *)((char *)data_handler+sizeof(int64_t)+sizeof(size_t)));
+                //*value = *((int64_t *)((char *)data_handler+sizeof(int64_t)+sizeof(size_t)));
+                memcpy(value, (char *)data_handler+sizeof(int64_t)+sizeof(size_t), sizeof(int64_t));
                 return 1;
             }
         }
@@ -249,6 +258,8 @@ class myDB
         uint64_t insert_prepare_time = 0;
         uint64_t insert_log_append_time = 0;
         uint64_t insert_index_insert_time = 0;
+        char *insert_buffer;
+        int insert_buffer_size;
         //moodycamel::ConcurrentQueue<struct Pair *> request_queue;
 };
 
@@ -259,6 +270,7 @@ struct db_server_param
     std::atomic<bool> *start;
     std::atomic<int> *readyCount;
     size_t finishSize;
+    double ops;
     db_server_param(int _id, myDB* _db, std::atomic<bool> *_start, std::atomic<int> *_readyCount)
         : id(_id), db(_db), start(_start), readyCount(_readyCount), finishSize(0) {}
 };
@@ -273,12 +285,21 @@ void db_server(db_server_param *p)
     //Pair kv_pair;
     Key_t key;
     unsigned counter = 0;
+    std::vector<unsigned> keys;
+    for (unsigned i = 0; i < InsertSizePerServer; i++) {
+        keys.push_back(i*ServerNum+id);
+    }
+    cout_lock.lock();
+    cout << "Server " << id << " shuffling keys." << endl;
+    cout_lock.unlock();
+    std::random_shuffle(keys.begin(), keys.end());
     //__sync_fetch_and_add(p->readyCount, 1);
     p->readyCount->fetch_add(1);
     cout_lock.lock();
     cout << "Server " << id << " is ready with db " << db << "." << endl;
     cout_lock.unlock();
     while(!(p->start->load(std::memory_order_relaxed))) {}
+    uint64_t thread_start = GetTimeNsec();
     for (unsigned t = 0; t < testTimes; t++) {
         /*
         for (unsigned i = 0; i < InsertSizePerServer/BatchSize; i++) {
@@ -291,9 +312,11 @@ void db_server(db_server_param *p)
             p->finishSize += BatchSize;
         }
         */
-        for (unsigned i = 0; i < InsertSizePerServer; i++) {
-            key = i*ServerNum+id;
-            db->Insert(key, ConstValue[i%2]);
+        //for (unsigned i = 0; i < InsertSizePerServer; i++) {
+        for (auto it = keys.begin(); it != keys.end(); it++) {
+            //key = i*ServerNum+id;
+            key = *it;
+            db->Insert(key, ConstValue[0]);
             counter++;
             if (counter == 1000) {
                 p->finishSize += counter;
@@ -303,7 +326,8 @@ void db_server(db_server_param *p)
     }
     p->finishSize += counter;
     counter = 0;
-    db->print_put_stat();
+    p->ops = (InsertSizePerServer * testTimes) / ((GetTimeNsec() - thread_start) / 1000000000.0);
+    //db->print_put_stat();
 }
 
 struct db_open_param
@@ -359,7 +383,7 @@ int main(int argc, char *argv[]){
     pid_t pid = getpid();
     printf("Process ID %d\n", pid);
     std::string mem_command = "cat /proc/" + std::to_string(pid) + "/status >> mem_dump";
-    zExecute(mem_command);
+    //zExecute(mem_command);
     //cout << "Log entry size is " << LogEntrySize << endl;
     bool create = true;
     if (argc == 2 && argv[1][0] == 'r') create = false;
@@ -378,7 +402,7 @@ int main(int argc, char *argv[]){
             dbParams[i] = new db_server_param(i, dbs[i], &start, &readyCount);
             server_threads[i] = thread(db_server, dbParams[i]);
         }
-        zExecute(mem_command);
+        //zExecute(mem_command);
         struct timespec time_start, time_end;//, time_middle;
         double time_span;
         double old_progress = 0, new_progress = 0;
@@ -408,7 +432,8 @@ int main(int argc, char *argv[]){
 #ifndef RECORD_AS_PROGRESS            
             if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
 #else
-            if (new_progress - old_progress >= 0.1) {
+            //if (new_progress - old_progress >= 0.1) {
+            if (new_fs - old_fs >= recordInterval) {
 #endif
                 //new_progress_checkpoint = GetTimeNsec();
                 //double span = (time_middle.tv_sec - time_start.tv_sec) + (time_middle.tv_nsec - time_start.tv_nsec)/1000000000.0;
@@ -435,17 +460,24 @@ int main(int argc, char *argv[]){
             server_threads[i].join();
         }
         time_span = ((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec)/1000000000.0);
-        double ops = InsertSize/(double)time_span;
+        //double ops = InsertSize/(double)time_span;
+        double ops = 0;
+        for (int i = 0; i < ServerNum; i++) {
+            ops += (dbParams[i]->ops);
+        }
         std::cout << "Insert ops: " << ops << std::endl;
 
-        zExecute(mem_command);
+        //zExecute(mem_command);
         fflush(stdout);
         int failSearch = 0;
         std::default_random_engine re(time(0));
-        std::uniform_int_distribution<Key_t> u(0, InsertSize-1);
+        //std::uniform_int_distribution<Key_t> u(0, InsertSize-1);
+        std::uniform_int_distribution<Key_t> u(InsertSize, 10*InsertSize);
         uint64_t get_time_span = 0;
         uint64_t get_time_max = 0, get_time_min = ~0, get_time_this;
         unsigned itemstoget = 1000000;
+        uint64_t rtime[1000];
+        for (int i = 0; i < 1000; i++) rtime[i] = 0;
         unsigned wrongget = 0;
         unsigned failedget = 0;
         Key_t key;
@@ -461,19 +493,29 @@ int main(int argc, char *argv[]){
             //cout << "Value for key " << key << " is " << ret << endl;
             if (ret == 0) {
                 failedget++;
-            } else if (strcmp(value, ConstValue[((key-key%ServerNum)/ServerNum)%2]) != 0) {
+            //} else if (strcmp(value, ConstValue[((key-key%ServerNum)/ServerNum)%2]) != 0) {
+            } else if (strcmp(value, ConstValue[0]) != 0) {
                 wrongget++;
-                cout << "Wrong value for key " << key << " : " << ret << endl;
+                //cout << "Wrong value for key " << key << " : " << ret << endl;
             }
             get_time_span += get_time_this;
             if (get_time_this > get_time_max) get_time_max = get_time_this;
             if (get_time_this < get_time_min) get_time_min = get_time_this;
-        }
+            if (get_time_this >= 10000) {
+                rtime[999]++;
+            } else {
+                rtime[get_time_this/10]++;
+            }
         }
         std::cout << "Avg Get Lat: " << get_time_span/(double)itemstoget << "ns, max " << get_time_max << "ns, min " << get_time_min << "ns." << std::endl;
         cout << "Wrong get num " << wrongget << endl
             << "Fail get num " << failedget << endl;
-        zExecute(mem_command);
+        std::cout << "Get time CDF." << std::endl;
+        for (int i = 0; i < 1000; i++) {
+            printf("%d %llu\n", i*10, rtime[i]);
+        }
+        }
+        //zExecute(mem_command);
         fflush(stdout);
     } else {
         cout << "Reading exiting DBs." << endl;

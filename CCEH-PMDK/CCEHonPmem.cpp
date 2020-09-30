@@ -16,12 +16,12 @@ using namespace std;
 
 #define RESERVER_SPACE
 //#define RECORD_WA
-#define YCSB_TEST
+//#define YCSB_TEST
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 1000*1024*1024;
-const int ServerNum = 8;
+const size_t InsertSize = 2000*1024*1024;
+const int ServerNum = 1;
 const int ReservePow = 22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
@@ -272,7 +272,7 @@ int main(int argc, char* argv[]){
             new_progress = fs/(double)InsertSize*100.0;
             new_progress_checkpoint = GetTimeNsec();
             //if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
-            if (new_progress - old_progress >= 0.1) {
+            if (new_progress - old_progress >= 0.05) {
                 //printf("\rProgress %2.1lf%%", new_progress);
                 //clock_gettime(CLOCK_REALTIME, &time_middle);
                 //double span = (time_middle.tv_sec - time_start.tv_sec) + (time_middle.tv_nsec - time_start.tv_nsec)/1000000000.0;
