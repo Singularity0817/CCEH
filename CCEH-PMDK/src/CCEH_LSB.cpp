@@ -10,10 +10,10 @@
 
 extern size_t perfCounter;
 
-unsigned long put_entry_num = 0;
-unsigned long put_probe_time = 0;
-unsigned long get_entry_num = 0;
-unsigned long get_probe_time = 0;
+//unsigned long put_entry_num = 0;
+//unsigned long put_probe_time = 0;
+//unsigned long get_entry_num = 0;
+//unsigned long get_probe_time = 0;
 /*
 
 // This function does not allow resizing
@@ -158,7 +158,7 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
   Key_t LOCK = INVALID;
   for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
     auto slot = (loc + i) % kNumSlot;
-    put_probe_time++;
+    //put_probe_time++;
     Key_t key_ = get_key(slot);
     if (CAS(&key_, &LOCK, SENTINEL)) {
       pair_insert_pmem(slot,key,value); 
@@ -172,7 +172,7 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
       LOCK = INVALID;
     }
   }
-  put_entry_num++;
+  //put_entry_num++;
   lock = sema;
   while (!CAS(&sema, &lock, lock-1)) {
     lock = sema;
@@ -348,8 +348,10 @@ CCEH::CCEH(size_t initCap, const char* path)
 
 CCEH::~CCEH(void)
 {
-    std::cout << "Total entries put: " << put_entry_num << ", probe time per entry: " << put_probe_time/(double)put_entry_num << std::endl;
-    std::cout << "Total entries get: " << get_entry_num << ", probe time per entry: " << get_probe_time/(double)get_entry_num << std::endl;
+    std::cout << "SizeofDirectly: " << sizeof(struct Directory) << ", SizeofSegments: " << dir->segment_size() << std::endl
+              << "SegmentNum: " << dir->segment_num() << ", SingleSegmentSize: " << sizeof(struct Segment) << std::endl;
+    //std::cout << "Total entries put: " << put_entry_num << ", probe time per entry: " << put_probe_time/(double)put_entry_num << std::endl;
+    //std::cout << "Total entries get: " << get_entry_num << ", probe time per entry: " << get_probe_time/(double)get_entry_num << std::endl;
 }
 
 Value_t CCEH::Get(Key_t& key) {
@@ -359,10 +361,11 @@ Value_t CCEH::Get(Key_t& key) {
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
 
   auto dir_ = dir->_[x];
-  get_entry_num++;
+  //get_entry_num++;
   for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
-    auto slot = (y+i) % Segment::kNumSlot;
-    get_probe_time++;
+    //auto slot = (y+i) % Segment::kNumSlot;
+    auto slot = (y+i) & Segment::kNumSlotMask;
+    //get_probe_time++;
     Key_t key_ = dir->_[x]->get_key(slot);
     if (key_ == key) {
      return dir->_[x]->get_value(slot);

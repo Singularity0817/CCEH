@@ -7,6 +7,6 @@ rm -f /mnt/pmem0/zwh_test/logDB/*
 #g++ ./example_2.cpp ./wal.cc ./src/CCEH_LSB.o -I ./ -L ./ -L /usr/local/lib -lpmem -o a.out
 #g++ ./example_3.cpp -std=c++17 ./wal.cc ./src/cuckoo_hash.o -I ./ -L ./ -L /usr/local/lib -lpmem -lpthread -o a.out
 #g++ ./log-structured-db.cpp -std=c++17 ./wal.cc ./src/CCEH_LSB.o -I ./ -L ./ -L /usr/local/lib -lpmem -lpthread -o a.out
-g++ ./log-structured-db-cuckoo.cpp -w -O3 -std=c++17 ./wal.cc ./util/slice.cc ./util/status.cc ./util/histogram.cc ./src/CCEH_LSB.o -I ./ -I ./util -L ./ -L ./util -L /usr/local/lib -lpmem -lpthread -o a.out
+g++ ./log-structured-db-cuckoo.cpp -O3 -std=c++17 ./wal.cc ./util/slice.cc ./src/CCEH_LSB.o -I ./ -L ./ -L /usr/local/lib -lpmem -lpthread -o a.out
 numactl -N 0 ./a.out
 #numactl -N 0 ./a.out r

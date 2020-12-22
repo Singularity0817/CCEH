@@ -20,7 +20,7 @@ constexpr size_t kMask = (1 << kSegmentBits)-1;
 constexpr size_t kShift = kSegmentBits;
 constexpr size_t kSegmentSize = (1 << kSegmentBits) * 16 * 4;
 constexpr size_t kNumPairPerCacheLine = 4;
-constexpr size_t kNumCacheLine = 4;
+constexpr size_t kNumCacheLine = 4;//4; infects the probe time, by default, it is 4
 
 POBJ_LAYOUT_BEGIN(CCEH_LAYOUT);
 POBJ_LAYOUT_ROOT(CCEH_LAYOUT, struct CCEH_pmem);
@@ -51,6 +51,7 @@ struct CCEH_pmem{
 };
 struct Segment {
   static const size_t kNumSlot = kSegmentSize/sizeof(Pair);
+  static const size_t kNumSlotMask = kNumSlot - 1;
 
   void* operator new(size_t size) {
     void* ret;
@@ -201,6 +202,13 @@ public:
   
   void SanityCheck(void*);
   void LSBUpdate(int, int, int, int, Segment**);
+
+  size_t segment_size() {
+    return capacity*sizeof(struct Segment);
+  }
+  size_t segment_num() {
+    return capacity;
+  }
 };
 
 class CCEH {
@@ -225,7 +233,7 @@ class CCEH {
     size_t global_depth;
     int init_pmem(const char* path){
 
-  size_t pool_size = PMEMOBJ_MIN_POOL*1024*12;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
+  size_t pool_size = PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
 
 	if(access(path, F_OK) != 0){
           pop = pmemobj_create(path, LAYOUT, pool_size, 0666);

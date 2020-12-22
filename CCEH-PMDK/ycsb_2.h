@@ -7,19 +7,21 @@
 #include <condition_variable> // std::condition_variable
 #include <stdlib.h>
 #include <random>
+#include <sys/time.h>
 
 #include "trace.h"
 #include "./src2/util/histogram.h"
-
-#define SPEED_UP_MODE_TEST
-#define ONE_SECOND 1
 using namespace std;
-//#define DURATION_MODE
+//#define SPEED_UP_MODE_TEST
+#define ONE_SECOND 1
 
-const int           FLAGS_readtime = 70; // read time for readwhilewriting test for read thread
+#define DURATION_MODE
+#define SEPERATE_RW_MODE
+
+const int           FLAGS_readtime = 600; // read time for readwhilewriting test for read thread
 const int           FLAGS_writetime = 20;
 const int           FLAGS_rwdelay = 1;   // delay between each write in us
-const int           FLAGS_sleep = 5;     // write thread delay FLAGS_sleep second to start
+const int           FLAGS_sleep = 30;     // write thread delay FLAGS_sleep second to start
 const int           FLAGS_speedupmodedelay = 5; // delay to enable speed up mode in s
 const int           FLAGS_delaybetweenbenchmarks = 10; // in s
 
@@ -27,17 +29,17 @@ const unsigned      FLAGS_get_lat_threshold_up = 1800;
 const unsigned      FLAGS_get_lat_threshold_down = 1500;
 
 const int           FLAGS_value_size = 8;
-const size_t        FLAGS_num = 100*1000*1000;//10000000;
+const size_t        FLAGS_num = 1000*1000*1000;//10000000;
 const size_t        FLAGS_ycsb_op_num = FLAGS_num / 8 / 10;
-const size_t        FLAGS_rwtest_get_num = 10*1000*1000;
-const size_t        FLAGS_rwtest_op_num = 2*1000*1000;
+const size_t        FLAGS_rwtest_get_num = 250*1000;
+const size_t        FLAGS_rwtest_op_num = 20*1000*1000 / 8;
 const size_t        FLAGS_reads = 1000000000;//10000000;
-const int           FLAGS_thread = 1;
-const size_t        FLAGS_stats_interval = 1000*1000; 
-const size_t        FLAGS_report_interval = 1;          // Report interval in seconds. if set to 0, we use FLAGS_stats_interval 
-const std::string   FLAGS_benchmarks = "ycsb_load,rwtest,rwtest,rwtest"; //ycsb_d,ycsb_a,ycsb_b,ycsb_c";
+const int           FLAGS_thread = 8;
+const size_t        FLAGS_stats_interval = 1000*1000;
+const size_t        FLAGS_report_interval = 10;          // Report interval in 0.1 seconds. if set to 0, we use FLAGS_stats_interval 
+const std::string   FLAGS_benchmarks = "ycsb_load,rwtest,rwtest";//,rwtest,rwtest,rwtest"; //ycsb_d,ycsb_a,ycsb_b,ycsb_c";
 
-const double        FLAGS_get_ratio = 0.50;
+const double        FLAGS_get_ratio = 0.25;
 
 namespace util {
 
@@ -47,7 +49,6 @@ inline uint64_t GetTimeNsec()
     clock_gettime(CLOCK_REALTIME, &nowtime);
     return nowtime.tv_sec * 1000000000 + nowtime.tv_nsec;
 }
-
 /**
  *  Note: When using this trace generator, we should do diffrent operation based on 
  *        the YCSB_op type
@@ -306,14 +307,13 @@ public:
     virtual void Initial(int thread_num) = 0;
     virtual int Put(const int64_t& key, size_t& v_size, const char* value, int tid) = 0;
     virtual int Get(const int64_t  key, int64_t* value, int tid) = 0;
-    /*
-    virtual void TurnOnSpeedUpMode() = 0;
-    virtual void TurnOffSpeedUpMode() = 0;
-    virtual size_t getLastLevelCompactionNum() = 0;
-    virtual size_t getReserveSpaceMergeNum() = 0;
-    virtual size_t getDumpedTableNum() = 0;
-    */
-    std::atomic<bool> speedupmode;
+    //virtual void TurnOnSpeedUpMode() = 0;
+    //virtual void TurnOffSpeedUpMode() = 0;
+    //virtual size_t getLastLevelCompactionNum() = 0;
+    //virtual size_t getReserveSpaceMergeNum() = 0;
+    //virtual size_t getDumpedTableNum() = 0;
+    //virtual size_t getDoubleLastLevelShardNum() = 0;
+    //std::atomic<bool> speedupmode;
 };
 
 class Stats {
@@ -339,7 +339,7 @@ public:
     
     void Start() {
         start_ = NowMicros();
-        next_report_time_ = start_ + FLAGS_report_interval * 1000000;
+        next_report_time_ = start_ + FLAGS_report_interval * 100000;
         next_report_ = 100;
         last_op_finish_ = start_;
         last_report_done_ = 0;
@@ -369,7 +369,8 @@ public:
     }
 
     void StartSingleOp() {
-        last_op_finish_ = NowMicros();
+        //last_op_finish_ = NowMicros();
+        last_op_finish_ = NowNanos();
     }
 
     void PrintSpeed() {
@@ -427,15 +428,17 @@ public:
             if(FLAGS_report_interval == 0 && (done_ % FLAGS_stats_interval) == 0) {
                 PrintSpeed(); 
                 if (!hist_.Empty()) {
+                    /*
                     int speed_up = 0;
                     if (hist_.Percentile(99) >= FLAGS_get_lat_threshold_up) {
                         speed_up = 1;
                     } else if (hist_.Percentile(99) <= FLAGS_get_lat_threshold_down) {
                         speed_up = 2;
                     }
+                    */
                     fprintf(stdout, "Nanoseconds per op:\n%s\n", hist_.ToString().c_str());
                     hist_.Clear();
-                    return speed_up;
+                    //return speed_up;
                 }
                 return 0;
             }
@@ -444,19 +447,21 @@ public:
         }
 
         if (FLAGS_report_interval != 0 && NowMicros() > next_report_time_) {
-            next_report_time_ += FLAGS_report_interval * 1000000;
+            next_report_time_ += FLAGS_report_interval * 100000;
             PrintSpeed(); 
             //if (is_hist) {
             if (!hist_.Empty()) {
+                /*
                 int speed_up = 0;
                 if (hist_.Percentile(99) >= FLAGS_get_lat_threshold_up) {
                     speed_up = 1;
                 } else if (hist_.Percentile(99) <= FLAGS_get_lat_threshold_down) {
                     speed_up = 2;
                 }
+                */
                 fprintf(stdout, "Nanoseconds per op:\n%s\n", hist_.ToString().c_str());
                 hist_.Clear();
-                return speed_up;
+                //return speed_up;
             }
             return 0;
         }
@@ -656,11 +661,15 @@ public:
     size_t reads_;
     std::vector<YCSBGenerator*> ycsb_gens_;
     std::vector<std::vector<YCSB_Op> > ycsb_ops_;
+    std::atomic<int> finish_thread_num;
+    std::atomic<bool> flag_begin_compaction;
     Benchmark(KVBase* kv) :
         kv_(kv),
         num_(FLAGS_num),
         value_size_(FLAGS_value_size),
-        reads_(FLAGS_reads)
+        reads_(FLAGS_reads),
+        finish_thread_num(0),
+        flag_begin_compaction(false)
         {}
 
     
@@ -809,29 +818,52 @@ public:
         thread_local int64_t gval = 0;
         int res_speedup = 0;
         bool speedupmodeoff = true;
+        int tid = thread->tid;
         //size_t value_size = FLAGS_value_size;
         Duration duration(FLAGS_readtime, 0);
         //uint64_t s_time = NowMicros() + 
         //        (FLAGS_sleep + FLAGS_writetime) * 1000000;
         while (!duration.Done(1)) {
-            size_t key = ycsb_gens_[thread->tid]->Next();
+            size_t key = ycsb_gens_[tid]->Next_rand();
             // assuming thraed num is power of 2
             //res = kv_->Get(key, &gval, thread->tid);
-            kv_->Get(key, &gval, thread->tid);
+            kv_->Get(key, &gval, tid);
             // the dicision to turn on/off speedup mode is made by FinishedSingleOp()
-            res_speedup = thread->stats.FinishedSingleOp(true);
+            /*
+            if (tid == 0) {
+                thread->stats.FinishedSingleOp(true);
+            } else {
+                thread->stats.FinishedSingleOp();
+            }
+            */
+            thread->stats.FinishedSingleOp();
+
+            /*
+#ifdef SPEED_UP_MODE_TEST
+            if (speedupmodeoff == true 
+                    && res_speedup == 1) {
+                thread->_db->TurnOnSpeedUpMode();
+                //fprintf(stdout, "Percentile SpeedUp mode ON\n");
+                //fflush(stdout);
+                speedupmodeoff = false;
+            }
+#endif
+            */
         }
-        
+        fprintf(stderr, "Fninish Get.\n");
     }
 
     void ReadWhileWriting(ThreadState* thread) {
-        /*
-        if ((thread->tid & 0x1) == 0) {
-            // even thread for read
-            ReadRandomHist(thread);
-        } else {*/
+#ifdef SEPERATE_RW_MODE
+        // if ((thread->tid & 0x1) == 0) {
+        //     // even thread for read
+        //     ReadRandomHist(thread);
+        // } else {
+        {
+#else
         //for (unsigned t = 0; t < 5; t++) {
         {
+#endif
             // Delay for FLAGS_sleep seconds, then send put requests.
             //::usleep(FLAGS_sleep * 1000000);
             int res_speedup = 0;
@@ -842,54 +874,256 @@ public:
             //int res = -1;
             char value[8] = "value.";
             thread_local int64_t gval = 0;
-            bool to_put = true;
             //int64_t gval;
             //bool check_time = true;
             size_t value_size = FLAGS_value_size;
+#ifdef DURATION_MODE
+            {
+                //::usleep(FLAGS_sleep * 1000000);
+                Duration duration_1(FLAGS_sleep, 0);
+                while (!duration_1.Done(1)) {
+                    //size_t key = ycsb_gens_[tid]->Next_rand();
+                    size_t key = ycsb_gens_[thread->tid]->Next_rand();
+                    // assuming thraed num is power of 2
+                    //res = kv_->Get(key, &gval, thread->tid);
+                    thread->stats.StartSingleOp();
+                    kv_->Get(key, &gval, thread->tid);
+                    if (thread->tid == 1) {
+                        res_speedup = thread->stats.FinishedSingleOp(true);
+                    } else {
+                        res_speedup = thread->stats.FinishedSingleOp();
+                    }
+                    /*
+                    if (thread->tid == 1 && res_speedup != -1) {
+                        fprintf(stdout, "Compaction ll_merge_num %lu last_level_compaction_num %lu dumped_table_num %lu\n", 
+                                thread->_db->getReserveSpaceMergeNum(),
+                                thread->_db->getLastLevelCompactionNum(),
+                                thread->_db->getDumpedTableNum());
+                        fflush(stdout);
+                    }
+                    */
+                }
+                uint64_t mix_workload_start = GetTimeNsec();
+                //Duration duration(60, 0);
+#ifdef SPEED_UP_MODE_TEST
+                thread->_db->TurnOnSpeedUpMode();
+                speedupmodeoff = false;
+#endif
+                size_t op_len = ycsb_ops_[thread->tid].size();
+                for (size_t i = 0; i < op_len; ++i) {
+                    thread->stats.StartSingleOp();
+                    YCSB_Ops(ycsb_ops_[thread->tid][i], thread->tid);
+                    //if (tid == 0 && ycsb_ops_[tid][i].type == kYCSB_Read) {
+                    if (thread->tid == 1 && ycsb_ops_[thread->tid][i].type == kYCSB_Read) {
+                        res_speedup = thread->stats.FinishedSingleOp(true);
+                    } else {
+                        res_speedup = thread->stats.FinishedSingleOp();
+                    }
+                    /*
+                    if (thread->tid == 1 && res_speedup != -1) {
+                        fprintf(stdout, "Compaction ll_merge_num %lu last_level_compaction_num %lu dumped_table_num %lu\n", 
+                                thread->_db->getReserveSpaceMergeNum(),
+                                thread->_db->getLastLevelCompactionNum(),
+                                thread->_db->getDumpedTableNum());
+                        fflush(stdout);
+                    }
+                    */
+                }
+                /*
+                for (size_t i = 0; i < FLAGS_rwtest_op_num; ++i) {
+                    // Between each put, we add a delay to control the put speed
+                    //uint64_t delay_end = NowMicros() + 1*FLAGS_rwdelay;
+
+                    // Since each thread loads the same key range in YCSB_Load phase,
+                    // the key can be used in any thread
+                    size_t key = ycsb_gens_[thread->tid]->Next();
+                    // Randomly pick a position. Assuming thread num is power of 2
+                    kv_->Put(key, value_size, value, thread->tid);
+                    res_speedup = thread->stats.FinishedSingleOp();
+                    
+                    if (thread->tid == 1 && res_speedup != -1) {
+                        fprintf(stdout, "Compaction ll_merge_num %lu last_level_compaction_num %lu dumped_table_num %lu\n", 
+                                thread->_db->getReserveSpaceMergeNum(),
+                                thread->_db->getLastLevelCompactionNum(),
+                                thread->_db->getDumpedTableNum());
+                        fflush(stdout);
+                    }
+                    
+                    //while (NowMicros() < delay_end) {
+                    //}
+                }
+                */
+               uint64_t mix_workload_interval = (GetTimeNsec()-mix_workload_start)/1000000000; //in seconds
+#ifdef SPEED_UP_MODE_TEST
+                finish_thread_num.fetch_add(1);
+                if (finish_thread_num.load(std::memory_order_acquire) == FLAGS_thread) {
+                    thread->_db->TurnOffSpeedUpMode();
+                    speedupmodeoff = true;
+                    finish_thread_num.store(0, std::memory_order_release);
+                    flag_begin_compaction.store(true, std::memory_order_release);
+                }
+                fprintf(stderr, "Finish Put, waiting background compactions....\n");
+                while(!flag_begin_compaction.load(std::memory_order_acquire)) {}
+                fprintf(stderr, "Begin second round get period.\n");
+                // fflush(stderr);
+                // uint64_t compaction_start = GetTimeNsec();
+                // while (Env::Default()->GetThreadPoolQueueLen(Env::LOW) > 0) {}
+                // fprintf(stderr, "Compaction finished, time spent %.1lf s\n", (GetTimeNsec() - compaction_start)/1000000000.0);
+#endif
+                uint64_t rest_time = FLAGS_readtime - FLAGS_sleep - mix_workload_interval;
+                Duration duration_2(rest_time, 0);
+                while (!duration_2.Done(1)) {
+                    //size_t key = ycsb_gens_[tid]->Next_rand();
+                    size_t key = ycsb_gens_[thread->tid]->Next_rand();
+                    // assuming thraed num is power of 2
+                    //res = kv_->Get(key, &gval, thread->tid);
+                    thread->stats.StartSingleOp();
+                    kv_->Get(key, &gval, thread->tid);
+                    if (thread->tid == 1) {
+                        res_speedup = thread->stats.FinishedSingleOp(true);
+                    } else {
+                        res_speedup = thread->stats.FinishedSingleOp();
+                    }
+                    /*
+                    if (thread->tid == 1 && res_speedup != -1) {
+                        fprintf(stdout, "Compaction ll_merge_num %lu last_level_compaction_num %lu dumped_table_num %lu\n", 
+                                thread->_db->getReserveSpaceMergeNum(),
+                                thread->_db->getLastLevelCompactionNum(),
+                                thread->_db->getDumpedTableNum());
+                        fflush(stdout);
+                    }
+                    */
+                }
+                /*
+                if (thread->tid == 1) {
+                    fprintf(stdout, "Final_Compaction ll_merge_num %lu last_level_compaction_num %lu dumped_table_num %lu\n", 
+                            thread->_db->getReserveSpaceMergeNum(),
+                            thread->_db->getLastLevelCompactionNum(),
+                            thread->_db->getDumpedTableNum());
+                    fflush(stdout);
+                }
+                */
+            }
+#else /*DURATION_MODE*/
             {
                 int tid = thread->tid;
                 //ycsb_gens_[tid]->Reset_trace();
                 Duration duration_1(30, 0);
                 //for (size_t i = 0; i < FLAGS_rwtest_get_num; ++i) {
                 while (!duration_1.Done(1)) {
+                    //size_t key = ycsb_gens_[tid]->Next_rand();
                     size_t key = ycsb_gens_[tid]->Next_rand();
                     // assuming thraed num is power of 2
                     //res = kv_->Get(key, &gval, thread->tid);
                     kv_->Get(key, &gval, tid);
                     // the dicision to turn on/off speedup mode is made by FinishedSingleOp()
+                    /*
                     if (tid == 0) {
                         res_speedup = thread->stats.FinishedSingleOp(true);
                     } else {
                         res_speedup = thread->stats.FinishedSingleOp();
                     }
+                    */
+                    res_speedup = thread->stats.FinishedSingleOp(true);
+                    if (thread->tid == 0 && res_speedup != -1) {
+                        fprintf(stdout, "Compaction ll_merge_num %lu last_level_compaction_num %lu dumped_table_num %lu\n", 
+                                thread->_db->getReserveSpaceMergeNum(),
+                                thread->_db->getLastLevelCompactionNum(),
+                                thread->_db->getDumpedTableNum());
+                        fflush(stdout);
+                    }
                 }
-
                 uint64_t mix_workload_start = GetTimeNsec();
                 size_t op_len = ycsb_ops_[tid].size();
                 //thread->stats.Start();
+#ifdef SPEED_UP_MODE_TEST
+                // turn on speedup mode directly
+                thread->_db->TurnOnSpeedUpMode();
+                speedupmodeoff = false;
+#endif
                 for (size_t i = 0; i < op_len; ++i) {
                     YCSB_Ops(ycsb_ops_[tid][i], tid);
-                    if (tid == 0 && ycsb_ops_[tid][i].type == kYCSB_Read) {
+                    //if (tid == 0 && ycsb_ops_[tid][i].type == kYCSB_Read) {
+                    if (ycsb_ops_[tid][i].type == kYCSB_Read) {
                         res_speedup = thread->stats.FinishedSingleOp(true);
                     } else {
                         res_speedup = thread->stats.FinishedSingleOp();
+                    }
+/*
+#ifdef SPEED_UP_MODE_TEST
+                    if (speedupmodeoff == true 
+                            && res_speedup == 1) {
+                        thread->_db->TurnOnSpeedUpMode();
+                        speedupmodeoff = false;
+                    }
+#endif
+*/
+                    
+                    if (thread->tid == 0 && res_speedup != -1) {
+                        fprintf(stdout, "Compaction ll_merge_num %lu last_level_compaction_num %lu dumped_table_num %lu\n", 
+                                thread->_db->getReserveSpaceMergeNum(),
+                                thread->_db->getLastLevelCompactionNum(),
+                                thread->_db->getDumpedTableNum());
+                        fflush(stdout);
                     }
                 }
                 uint64_t mix_workload_interval = (GetTimeNsec()-mix_workload_start)/1000000000; //in seconds
                 
+#ifdef SPEED_UP_MODE_TEST
+                //::usleep(FLAGS_sleep * 1000000);
+                //uint64_t compaction_start = GetTimeNsec();
+                thread->_db->TurnOffSpeedUpMode();
+                if(tid == 0) {
+                    fprintf(stderr, "Before %u merge and %u compaction to go, shards with two last levels %lu\n", 
+                            Env::Default()->GetThreadPoolQueueLen(Env::LOW),
+                            Env::Default()->GetThreadPoolQueueLen(Env::HIGH),
+                            thread->_db->getDoubleLastLevelShardNum());
+                }
+                speedupmodeoff == true;
+//                 while (Env::Default()->GetThreadPoolQueueLen(Env::LOW) > 0) {
+// #else /*SPEED_UP_MODE_TEST*/
+//                 for (size_t i = 0; i < FLAGS_rwtest_get_num * 10; ++i) {
+#endif
                 //ycsb_gens_[tid]->Reset_trace();
-                Duration duration_2(570 - mix_workload_interval, 0);
+                Duration duration_2(270 - mix_workload_interval, 0);
                 while (!duration_2.Done(1)) {
+                //for (size_t i = 0; i < FLAGS_rwtest_get_num * 10; ++i) {
+                    //size_t key = ycsb_gens_[tid]->Next_rand();
                     size_t key = ycsb_gens_[tid]->Next_rand();
                     // assuming thraed num is power of 2
                     kv_->Get(key, &gval, tid);
+                    /*
                     if (tid == 0) {
                         res_speedup = thread->stats.FinishedSingleOp(true);
                     } else {
                         res_speedup = thread->stats.FinishedSingleOp();
                     }
+                    */
+                    res_speedup = thread->stats.FinishedSingleOp(true);
+                    if (thread->tid == 0 && res_speedup != -1) {
+                        fprintf(stdout, "Compaction ll_merge_num %lu last_level_compaction_num %lu dumped_table_num %lu\n", 
+                                thread->_db->getReserveSpaceMergeNum(),
+                                thread->_db->getLastLevelCompactionNum(),
+                                thread->_db->getDumpedTableNum());
+                        fflush(stdout);
+                    }
                 }
+#ifdef SPEED_UP_MODE_TEST
+                if (tid == 0) {
+                    fprintf(stderr, "After %u merge and %u compaction to go, shards with two last levels %lu\n", 
+                            Env::Default()->GetThreadPoolQueueLen(Env::LOW),
+                            Env::Default()->GetThreadPoolQueueLen(Env::HIGH),
+                            thread->_db->getDoubleLastLevelShardNum());
+                }
+                //double compaction_elapse = (GetTimeNsec() - compaction_start) / 1000000000.0;
+                /*
+                if (tid == 0) {
+                    fprintf(stderr, "Merging_time_span %.4lf\n", tid, compaction_elapse);
+                }
+                */
+#endif
             }
+#endif /*DURATION_MODE*/
         }
     }
 

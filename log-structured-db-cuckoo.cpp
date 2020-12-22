@@ -38,12 +38,12 @@ const int ServerNum = 1;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
 const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
-const size_t EstimateLogSize = 512+(LogEntrySize*InsertSizePerServer)+512*1024*1024;
+const size_t EstimateLogSize = 2*(512+(LogEntrySize*InsertSizePerServer)+512*1024*1024);
 //const size_t EstimateLogSize = 512*1024*1024;
 const size_t testTimes = 2;
 
 //#define YCSB_TEST
-#define RESERVE_MODE
+//#define RESERVE_MODE
 //#define RECORD_WA
 #define RECORD_AS_PROGRESS
 

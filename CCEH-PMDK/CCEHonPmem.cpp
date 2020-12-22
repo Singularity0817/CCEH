@@ -11,17 +11,18 @@
 #include "util/pmm_util.h"
 #include "util/perf.h"
 #include <mutex>
-#include "./ycsb.h"
+//#include "./ycsb.h"
+#include "./ycsb_2.h"
 using namespace std;
 
-#define RESERVER_SPACE
+//#define RESERVER_SPACE
 //#define RECORD_WA
-//#define YCSB_TEST
+#define YCSB_TEST
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
 const size_t InsertSize = 2000*1024*1024;
-const int ServerNum = 1;
+const int ServerNum = 8;
 const int ReservePow = 22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
@@ -320,9 +321,11 @@ int main(int argc, char* argv[]){
         //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = 10*1024*1024;
+        unsigned entries_to_get = 100*1024*1024;
         Key_t t_key;
         size_t fail_get = 0;
+        uint64_t rtime[1000];
+        for (int i = 0; i < 1000; i++) rtime[i] = 0;
         //util::IPMWatcher watcher("cceh_get");
         //debug_perf_switch();
         for(unsigned i = 0; i < entries_to_get; i++){
@@ -335,6 +338,11 @@ int main(int argc, char* argv[]){
 	        if (r_span > r_max) r_max = r_span;
 	        if (r_span < r_min) r_min = r_span;
             if (ret == NONE) fail_get++;
+            if (r_span > 10000) {
+                rtime[999]++;
+            } else {
+                rtime[r_span/10]++;
+            }
         }
         //debug_perf_stop();
         std::cout << "Get Entries: " << entries_to_get << ", fail get" << fail_get << ", size " 
@@ -342,6 +350,10 @@ int main(int argc, char* argv[]){
             << "ns, avg_time " << ((double)elapsed)/entries_to_get << "ns, ops: " 
             << entries_to_get/(((double)elapsed)/1000000000)/1024/1024 << "Mops, min " << r_min 
             << ", max " << r_max << std::endl;
+        std::cout << "Read Lat PDF" << std::endl;
+        for (int i = 0; i < 1000; i++) {
+            printf("%d %llu\n", i*10, rtime[i]);
+        }
         }
     }else{
         return 0;

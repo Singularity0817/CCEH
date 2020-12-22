@@ -1,27 +1,53 @@
 #pragma once
+#include <unistd.h>
 #include <vector>
 #include <algorithm>
 #include <thread>         // std::thread
 #include <mutex>          // std::mutex
 #include <condition_variable> // std::condition_variable
-#include "./util/slice.h"
+#include <stdlib.h>
+#include <random>
 #include <sys/time.h>
 
 #include "trace.h"
+#include "histogram.h"
 
+#define SPEED_UP_MODE_TEST
+#define ONE_SECOND 1
+using namespace std;
+//#define DURATION_MODE
+
+const int           FLAGS_readtime = 70; // read time for readwhilewriting test for read thread
+const int           FLAGS_writetime = 20;
+const int           FLAGS_rwdelay = 1;   // delay between each write in us
+const int           FLAGS_sleep = 5;     // write thread delay FLAGS_sleep second to start
+const int           FLAGS_speedupmodedelay = 5; // delay to enable speed up mode in s
+const int           FLAGS_delaybetweenbenchmarks = 10; // in s
+
+const unsigned      FLAGS_get_lat_threshold_up = 1800;
+const unsigned      FLAGS_get_lat_threshold_down = 1500;
 
 const int           FLAGS_value_size = 8;
-const size_t        FLAGS_num = 1000000000;//10000000;
-const size_t        FLAGS_ycsb_op_num = FLAGS_num / 10 / 8;
+const size_t        FLAGS_num = 1000*1000*1000;//10000000;
+const size_t        FLAGS_ycsb_op_num = FLAGS_num / 8 / 10;
+const size_t        FLAGS_rwtest_get_num = 10*1000*1000;
+const size_t        FLAGS_rwtest_op_num = 20*1000*1000;
 const size_t        FLAGS_reads = 1000000000;//10000000;
 const int           FLAGS_thread = 8;
-const size_t        FLAGS_stats_interval = 1000000; 
-const size_t        FLAGS_report_interval = 0;          // Report interval in seconds. if set to 0, we use FLAGS_stats_interval 
-const std::string   FLAGS_benchmarks = "ycsb_load,ycsb_f";//"ycsb_load,ycsb_d,ycsb_a,ycsb_b,ycsb_c";
-const int           FLAGS_interval_between_benchmarks = 5;
+const size_t        FLAGS_stats_interval = 1000*1000; 
+const size_t        FLAGS_report_interval = 1;          // Report interval in seconds. if set to 0, we use FLAGS_stats_interval 
+const std::string   FLAGS_benchmarks = "ycsb_load,rwtest,rwtest,rwtest"; //ycsb_d,ycsb_a,ycsb_b,ycsb_c";
+
+const double        FLAGS_get_ratio = 0.50;
 
 namespace util {
 
+inline uint64_t GetTimeNsec()
+{
+    struct timespec nowtime;
+    clock_gettime(CLOCK_REALTIME, &nowtime);
+    return nowtime.tv_sec * 1000000000 + nowtime.tv_nsec;
+}
 
 /**
  *  Note: When using this trace generator, we should do diffrent operation based on 
@@ -46,7 +72,8 @@ public:
     YCSBGenerator(size_t range_min, size_t range_max, size_t count):
         min_(range_min),
         max_(range_max),
-        trace_(31415926, min_, max_)
+        seed_(31415926),
+        trace_(seed_, min_, max_)
     {
         keys_.reserve(count);
         keys_.resize(count);
@@ -54,10 +81,27 @@ public:
         // initial keys sequence using provided trace
         for (size_t i = 0; i < count; ++i) {
             keys_[i] = trace_.Next();
+            /*
             if ((i & 0xFFFFF) == 0) {
                 fprintf(stderr, "Generate keys: %.1f %%\r", (double)i/count*100.0);
             }
+            */
         }
+        re_ = default_random_engine(time(0));
+        u_ = uniform_int_distribution<size_t>(min_, max_);
+    }
+
+    inline size_t Next() {
+        return trace_.Next();
+    }
+
+    inline size_t Next_rand() {
+        return u_(re_);
+    }
+
+    inline void Reset_trace() {
+        seed_ = ((seed_ + 5) * 3 + 7);
+        trace_ = TraceUniform(seed_, min_, max_);
     }
 
     const std::vector<size_t>& InsertionSequence() {
@@ -165,6 +209,30 @@ public:
         std::random_shuffle(res.begin(), res.end(), ShuffleF);
         return res;
     }
+
+    // put get mixed workload, defined by the ratio of get opts
+    std::vector<YCSB_Op> Sequence_getputmixed(size_t count, double get_r) {
+        std::vector<YCSB_Op> res;
+        size_t get_count = (size_t)(count * get_r);
+        size_t put_count = count - get_count;
+
+        for (uint64_t i = 0; i < get_count; ++i) {
+            YCSB_Op ops;
+            ops.key = trace_.Next();
+            ops.type = kYCSB_Read;
+            res.push_back(ops);
+        }
+
+        for (uint64_t i = 0; i < put_count; ++i) {
+            YCSB_Op ops;
+            ops.key = trace_.Next();
+            ops.type = kYCSB_Write;
+            res.push_back(ops);
+        }
+
+        std::random_shuffle(res.begin(), res.end(), ShuffleMix);
+        return res;
+    }
     
 // ---------------- Private Function ---------------
 private:
@@ -199,13 +267,20 @@ static int ShuffleF(int i) {
   return trace->Next() % i;
 }
 
+static int ShuffleMix(int i) {
+  static Trace* trace = new TraceUniform(314159);
+  return trace->Next() % i;
+}
+
 // ---------------- Private Member ----------------
 private:
     size_t min_;
     size_t max_;
     std::vector<size_t> keys_;
     TraceUniform trace_;
-
+    uint64_t seed_;
+    default_random_engine re_;
+    uniform_int_distribution<size_t> u_;
 };
 
 
@@ -232,6 +307,14 @@ public:
     virtual void Initial(int thread_num) = 0;
     virtual int Put(const int64_t& key, size_t& v_size, const char* value, int tid) = 0;
     virtual int Get(const int64_t  key, int64_t* value, int tid) = 0;
+    /*
+    virtual void TurnOnSpeedUpMode() = 0;
+    virtual void TurnOffSpeedUpMode() = 0;
+    virtual size_t getLastLevelCompactionNum() = 0;
+    virtual size_t getReserveSpaceMergeNum() = 0;
+    virtual size_t getDumpedTableNum() = 0;
+    */
+    std::atomic<bool> speedupmode;
 };
 
 class Stats {
@@ -242,6 +325,8 @@ public:
     double seconds_;
     double next_report_time_;
     double last_op_finish_;
+    unsigned last_level_compaction_num_;
+    HistogramImpl hist_;
 
     uint64_t done_;
     uint64_t last_report_done_;
@@ -260,13 +345,16 @@ public:
         last_op_finish_ = start_;
         last_report_done_ = 0;
         last_report_finish_ = start_;
+        last_level_compaction_num_ = 0;
         done_ = 0;
         seconds_ = 0;
         finish_ = start_;
         message_.clear();
+        hist_.Clear();
     }
 
     void Merge(const Stats& other) {
+        hist_.Merge(other.hist_);
         done_ += other.done_;
         seconds_ += other.seconds_;
         if (other.start_ < start_) start_ = other.start_;
@@ -292,7 +380,7 @@ public:
         std::string cur_time = TimeToString(now/1000000);
         fprintf(stdout,
                 "%s ... thread %d: (%lu,%lu) ops and "
-                "(%.1f,%.1f) ops/second in (%.6f,%.6f) seconds\n",
+                "( %.1f,%.1f ) ops/second in (%.6f,%.6f) seconds\n",
                 cur_time.c_str(), 
                 tid_,
                 done_ - last_report_done_, done_,
@@ -318,7 +406,14 @@ public:
         AppendWithSpace(&message_, msg);
     }
     
-    inline void FinishedSingleOp() {
+    inline int FinishedSingleOp(bool is_hist=false) {
+        double now = NowNanos();
+        if (is_hist) {
+            double nanos = now - last_op_finish_;
+            hist_.Add(nanos);
+        }
+        last_op_finish_ = now;
+
         done_++;
         if (done_ >= next_report_) {
             if      (next_report_ < 1000)   next_report_ += 100;
@@ -328,20 +423,45 @@ public:
             else if (next_report_ < 100000) next_report_ += 10000;
             else if (next_report_ < 500000) next_report_ += 50000;
             else                            next_report_ += 100000;
-            fprintf(stderr, "... finished %llu ops%30s\r", (unsigned long long )done_, "");
+            //fprintf(stderr, "... finished %llu ops%30s\r", (unsigned long long )done_, "");
             
-            if(FLAGS_report_interval == 0 && done_ % FLAGS_stats_interval == 0) {
+            if(FLAGS_report_interval == 0 && (done_ % FLAGS_stats_interval) == 0) {
                 PrintSpeed(); 
+                if (!hist_.Empty()) {
+                    int speed_up = 0;
+                    if (hist_.Percentile(99) >= FLAGS_get_lat_threshold_up) {
+                        speed_up = 1;
+                    } else if (hist_.Percentile(99) <= FLAGS_get_lat_threshold_down) {
+                        speed_up = 2;
+                    }
+                    fprintf(stdout, "Nanoseconds per op:\n%s\n", hist_.ToString().c_str());
+                    hist_.Clear();
+                    return speed_up;
+                }
+                return 0;
             }
-            
-            fflush(stderr);
-            fflush(stdout);
+            //fflush(stderr);
+            //fflush(stdout);
         }
 
         if (FLAGS_report_interval != 0 && NowMicros() > next_report_time_) {
             next_report_time_ += FLAGS_report_interval * 1000000;
             PrintSpeed(); 
+            //if (is_hist) {
+            if (!hist_.Empty()) {
+                int speed_up = 0;
+                if (hist_.Percentile(99) >= FLAGS_get_lat_threshold_up) {
+                    speed_up = 1;
+                } else if (hist_.Percentile(99) <= FLAGS_get_lat_threshold_down) {
+                    speed_up = 2;
+                }
+                fprintf(stdout, "Nanoseconds per op:\n%s\n", hist_.ToString().c_str());
+                hist_.Clear();
+                return speed_up;
+            }
+            return 0;
         }
+        return -1;
     }
 
     std::string TimeToString(uint64_t secondsSince1970) {
@@ -366,7 +486,7 @@ public:
 
 
  
-    void Report(const Slice& name) {
+    void Report(const Slice& name, bool print_hist = false) {
         // Pretend at least one op was done in case we are running a benchmark
         // that does not call FinishedSingleOp().
         if (done_ < 1) done_ = 1;
@@ -375,18 +495,21 @@ public:
         double elapsed = (finish_ - start_) * 1e-6;
 
         double throughput = (double)done_/elapsed;
-        fprintf(stdout, "%-12s : %11.3f micros/op %lf Mops;%s%s\n",
+        fprintf(stdout, "%-12s : %11.3f micros/op %lf Mops/s;%s%s\n",
                 name.ToString().c_str(),
                 elapsed * 1e6 / done_,
                 throughput/1024/1024,
                 (extra.empty() ? "" : " "),
                 extra.c_str());
-        fprintf(stderr, "%-12s : %11.3f micros/op %lf Mops;%s%s\n",
+        fprintf(stderr, "%-12s : %11.3f micros/op %lf Mops/s;%s%s\n",
                 name.ToString().c_str(),
                 elapsed * 1e6 / done_,
                 throughput/1024/1024,
                 (extra.empty() ? "" : " "),
                 extra.c_str());
+        if (print_hist) {
+            fprintf(stdout, "Nanoseconds per op:\n%s\n", hist_.ToString().c_str());
+        }
         fflush(stdout);
         fflush(stderr);
     }
@@ -420,10 +543,12 @@ struct ThreadState {
     // Random rand;         // Has different seeds for different threads
     Stats stats;
     SharedState* shared;
+    KVBase *_db;
 
-    ThreadState(int index)
+    ThreadState(int index, KVBase *db)
         : tid(index),
-            stats(index) {
+            stats(index),
+            _db(db) {
             // printf("Random seed: %d\n", seed);
     }
 };
@@ -470,6 +595,46 @@ class Duration {
   uint64_t start_at_;
 };
 
+class Duration_usec {
+ public:
+  Duration_usec(uint64_t max_useconds, int64_t max_ops, int64_t ops_per_stage = 0) {
+    max_useconds_ = max_useconds;
+    max_ops_= max_ops;
+    ops_per_stage_ = (ops_per_stage > 0) ? ops_per_stage : max_ops;
+    ops_ = 0;
+    start_at_ = NowMicros();
+  }
+
+  inline int64_t GetStage() { return std::min(ops_, max_ops_ - 1) / ops_per_stage_; }
+
+  inline bool Done(int64_t increment) {
+    if (increment <= 0) increment = 1;    // avoid Done(0) and infinite loops
+    ops_ += increment;
+
+    if (max_useconds_) {
+      // Recheck every appx 1000 ops (exact iff increment is factor of 1000)
+      auto granularity = 10;
+      if ((ops_ / granularity) != ((ops_ - increment) / granularity)) {
+        uint64_t now = NowMicros();
+        return (now - start_at_) >= max_useconds_;
+      } else {
+        return false;
+      }
+    } else {
+      return ops_ > max_ops_;
+    }
+  }
+
+  inline int64_t Ops() {
+    return ops_;
+  }
+ private:
+  uint64_t max_useconds_;
+  int64_t max_ops_;
+  int64_t ops_per_stage_;
+  int64_t ops_;
+  uint64_t start_at_;
+};
 
 #if defined(__linux)
 static std::string TrimSpace(std::string s) {
@@ -513,6 +678,7 @@ public:
         }
 
         // run benchmark
+        bool print_hist = false;
         const char* benchmarks = FLAGS_benchmarks.c_str();
         while (benchmarks != nullptr) {
             void (Benchmark::*method)(ThreadState*) = nullptr;
@@ -573,10 +739,21 @@ public:
                 for (int i = 0; i < FLAGS_thread; ++i) {
                     ycsb_ops_.emplace_back(std::move(ycsb_gens_[i]->Sequence_ycsbf(FLAGS_ycsb_op_num)));
                 }
-            } 
+            } else if (name == "rwtest") {
+                method = &Benchmark::ReadWhileWriting;
+                if (ycsb_ops_.size() != 0) {
+                    printf("YCSB workload not reset before testing.\n");
+                    exit(1);
+                }
+                for (int i = 0; i < FLAGS_thread; ++i) {
+                    ycsb_ops_.emplace_back(
+                            std::move(ycsb_gens_[i]->Sequence_getputmixed(FLAGS_rwtest_op_num, FLAGS_get_ratio)));
+                }
+                print_hist = true;
+            }
 
-            if (method != nullptr) RunBenchmark(FLAGS_thread, name, method);
-            ::usleep(FLAGS_interval_between_benchmarks * 1000000);
+            if (method != nullptr) RunBenchmark(FLAGS_thread, name, method, print_hist);
+            ::usleep(FLAGS_delaybetweenbenchmarks * 1000000);
         }
         
         
@@ -627,6 +804,97 @@ public:
 
     }
 
+    inline void ReadRandomHist(ThreadState* thread) {
+        //int res = -1;
+        //char value[8] = "value.";
+        thread_local int64_t gval = 0;
+        int res_speedup = 0;
+        bool speedupmodeoff = true;
+        //size_t value_size = FLAGS_value_size;
+        Duration duration(FLAGS_readtime, 0);
+        //uint64_t s_time = NowMicros() + 
+        //        (FLAGS_sleep + FLAGS_writetime) * 1000000;
+        while (!duration.Done(1)) {
+            size_t key = ycsb_gens_[thread->tid]->Next();
+            // assuming thraed num is power of 2
+            //res = kv_->Get(key, &gval, thread->tid);
+            kv_->Get(key, &gval, thread->tid);
+            // the dicision to turn on/off speedup mode is made by FinishedSingleOp()
+            res_speedup = thread->stats.FinishedSingleOp(true);
+        }
+        
+    }
+
+    void ReadWhileWriting(ThreadState* thread) {
+        /*
+        if ((thread->tid & 0x1) == 0) {
+            // even thread for read
+            ReadRandomHist(thread);
+        } else {*/
+        //for (unsigned t = 0; t < 5; t++) {
+        {
+            // Delay for FLAGS_sleep seconds, then send put requests.
+            //::usleep(FLAGS_sleep * 1000000);
+            int res_speedup = 0;
+            bool speedupmodeoff = true;
+            thread->stats.Start();
+            // odd thread for write.
+            
+            //int res = -1;
+            char value[8] = "value.";
+            thread_local int64_t gval = 0;
+            bool to_put = true;
+            //int64_t gval;
+            //bool check_time = true;
+            size_t value_size = FLAGS_value_size;
+            {
+                int tid = thread->tid;
+                //ycsb_gens_[tid]->Reset_trace();
+                Duration duration_1(30, 0);
+                //for (size_t i = 0; i < FLAGS_rwtest_get_num; ++i) {
+                while (!duration_1.Done(1)) {
+                    size_t key = ycsb_gens_[tid]->Next_rand();
+                    // assuming thraed num is power of 2
+                    //res = kv_->Get(key, &gval, thread->tid);
+                    kv_->Get(key, &gval, tid);
+                    // the dicision to turn on/off speedup mode is made by FinishedSingleOp()
+                    if (tid == 0) {
+                        res_speedup = thread->stats.FinishedSingleOp(true);
+                    } else {
+                        res_speedup = thread->stats.FinishedSingleOp();
+                    }
+                }
+
+                uint64_t mix_workload_start = GetTimeNsec();
+                size_t op_len = ycsb_ops_[tid].size();
+                //thread->stats.Start();
+                for (size_t i = 0; i < op_len; ++i) {
+                    YCSB_Ops(ycsb_ops_[tid][i], tid);
+                    if (tid == 0 && ycsb_ops_[tid][i].type == kYCSB_Read) {
+                        res_speedup = thread->stats.FinishedSingleOp(true);
+                    } else {
+                        res_speedup = thread->stats.FinishedSingleOp();
+                    }
+                }
+                uint64_t mix_workload_interval = (GetTimeNsec()-mix_workload_start)/1000000000; //in seconds
+                
+                //ycsb_gens_[tid]->Reset_trace();
+                Duration duration_2(570 - mix_workload_interval, 0);
+                while (!duration_2.Done(1)) {
+                    size_t key = ycsb_gens_[tid]->Next_rand();
+                    // assuming thraed num is power of 2
+                    kv_->Get(key, &gval, tid);
+                    if (tid == 0) {
+                        res_speedup = thread->stats.FinishedSingleOp(true);
+                    } else {
+                        res_speedup = thread->stats.FinishedSingleOp();
+                    }
+                }
+            }
+        }
+    }
+
+    
 
 
 private:
@@ -666,7 +934,7 @@ private:
     }
 
     void RunBenchmark(int thread_num, const std::string& name, 
-                      void (Benchmark::*method)(ThreadState*)) {
+                      void (Benchmark::*method)(ThreadState*), bool print_hist) {
         SharedState shared(thread_num);
         ThreadArg* arg = new ThreadArg[thread_num];
         std::thread server_threads[thread_num];
@@ -674,7 +942,7 @@ private:
             arg[i].bm = this;
             arg[i].method = method;
             arg[i].shared = &shared;
-            arg[i].thread = new ThreadState(i);
+            arg[i].thread = new ThreadState(i, kv_);
             arg[i].thread->shared = &shared;
             server_threads[i] = std::thread(ThreadBody, &arg[i]);
         }
@@ -694,7 +962,7 @@ private:
         for (int i = 0; i < thread_num; i++) {
             merge_stats.Merge(arg[i].thread->stats);
         }
-        merge_stats.Report(name);
+        merge_stats.Report(name, print_hist);
         
         for (auto& th : server_threads) th.join();
     }
