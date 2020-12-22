@@ -17,7 +17,7 @@ using namespace std;
 
 //#define RESERVER_SPACE
 //#define RECORD_WA
-#define YCSB_TEST
+//#define YCSB_TEST
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;

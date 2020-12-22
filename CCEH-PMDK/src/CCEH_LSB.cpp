@@ -125,7 +125,6 @@ int Segment::Delete(Key_t& key, size_t loc, size_t key_hash){
     lock = sema;
   }
   return ret;
-
 }
 int CCEH::Delete(Key_t& key) {
 STARTOVER:
@@ -203,8 +202,8 @@ Segment** Segment::Split(PMEMobjpool *pop) {
   //printf("Split\n");
   for (unsigned i = 0; i < kNumSlot; ++i) {
     //auto key_hash = h(&_[i].key, sizeof(Key_t));
-   Key_t key_ = get_key(i);
-   Value_t value_ = get_value(i);
+    Key_t key_ = get_key(i);
+    Value_t value_ = get_value(i);
     auto key_hash = h(&key_, sizeof(Key_t));
     if (key_hash & ((size_t) 1 << (local_depth))) {
       split[1]->Insert4split
@@ -262,7 +261,6 @@ STARTOVER:
 RETRY:
   auto x = (key_hash % dir->capacity);
   auto target = dir->_[x];
-  //printf("{{{%d %d}}}\n",key,key_hash);
   auto ret = target->Insert(key, value, y, key_hash);
 
   if (ret == 1) {
@@ -280,7 +278,7 @@ RETRY:
       asm("nop");
     }
     { // CRITICAL SECTION - directory update
-     x = (key_hash % dir->capacity);
+      x = (key_hash % dir->capacity);
       if (dir->_[x]->local_depth < global_depth) {  // normal split
         dir->LSBUpdate(s[0]->local_depth, global_depth, dir->capacity, x, s);
       } else {  // directory doubling
@@ -298,10 +296,10 @@ RETRY:
         global_depth += 1;
         clflush((char*)&global_depth, sizeof(global_depth));
 
-	dir->doubling_pmem();
-	dir->segment_bind_pmem(x, s[0]);
-	dir->segment_bind_pmem(x+dir->capacity/2, s[1]);
-	set_global_depth_pmem(global_depth);	
+        dir->doubling_pmem();
+        dir->segment_bind_pmem(x, s[0]);
+        dir->segment_bind_pmem(x+dir->capacity/2, s[1]);
+        set_global_depth_pmem(global_depth);
         delete d;
         // TODO: requiered to do this atomically
       }
@@ -322,36 +320,36 @@ RETRY:
 CCEH::CCEH(const char* path)
 {
   if(init_pmem(path)){
-  constructor(0);
-  size_t capacity = dir->capacity;
-  for(unsigned i=0;i<capacity;i++){
-     dir->_[i] = new Segment(pop, global_depth);
-     dir->segment_bind_pmem(i, dir->_[i]);
-     dir->_[i]->pattern = i;    
-  }
+    constructor(0);
+    size_t capacity = dir->capacity;
+    for(unsigned i=0;i<capacity;i++){
+      dir->_[i] = new Segment(pop, global_depth);
+      dir->segment_bind_pmem(i, dir->_[i]);
+      dir->_[i]->pattern = i;    
+    }
   }
 }
 
 CCEH::CCEH(size_t initCap, const char* path)
 {
   if(init_pmem(path)){
-  constructor(log2(initCap));
-  std::cout << "initCap " << initCap << " depth " << log2(initCap) << std::endl;
-  size_t capacity = dir->capacity;
-  for(unsigned i=0;i<capacity;i++){
-     dir->_[i] = new Segment(pop, global_depth);
-     dir->segment_bind_pmem(i, dir->_[i]);
-     dir->_[i]->pattern = i;    
-  }
+    constructor(log2(initCap));
+    std::cout << "initCap " << initCap << " depth " << log2(initCap) << std::endl;
+    size_t capacity = dir->capacity;
+    for(unsigned i=0;i<capacity;i++){
+      dir->_[i] = new Segment(pop, global_depth);
+      dir->segment_bind_pmem(i, dir->_[i]);
+      dir->_[i]->pattern = i;    
+    }
   }
 }
 
 CCEH::~CCEH(void)
 {
-    std::cout << "SizeofDirectly: " << sizeof(struct Directory) << ", SizeofSegments: " << dir->segment_size() << std::endl
-              << "SegmentNum: " << dir->segment_num() << ", SingleSegmentSize: " << sizeof(struct Segment) << std::endl;
-    //std::cout << "Total entries put: " << put_entry_num << ", probe time per entry: " << put_probe_time/(double)put_entry_num << std::endl;
-    //std::cout << "Total entries get: " << get_entry_num << ", probe time per entry: " << get_probe_time/(double)get_entry_num << std::endl;
+  std::cout << "SizeofDirectly: " << sizeof(struct Directory) << ", SizeofSegments: " << dir->segment_size() << std::endl
+            << "SegmentNum: " << dir->segment_num() << ", SingleSegmentSize: " << sizeof(struct Segment) << std::endl;
+  //std::cout << "Total entries put: " << put_entry_num << ", probe time per entry: " << put_probe_time/(double)put_entry_num << std::endl;
+  //std::cout << "Total entries get: " << get_entry_num << ", probe time per entry: " << get_probe_time/(double)get_entry_num << std::endl;
 }
 
 Value_t CCEH::Get(Key_t& key) {
@@ -368,8 +366,8 @@ Value_t CCEH::Get(Key_t& key) {
     //get_probe_time++;
     Key_t key_ = dir->_[x]->get_key(slot);
     if (key_ == key) {
-     return dir->_[x]->get_value(slot);
+      return dir->_[x]->get_value(slot);
     }
   }
- return NONE;
+  return NONE;
 }

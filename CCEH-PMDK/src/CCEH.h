@@ -42,7 +42,6 @@ struct Directory_pmem{
 	size_t depth;
 	bool lock;
 	int sema = 0;
-
 	TOID_ARRAY(TOID(struct Segment_pmem)) segments;
 };
 struct CCEH_pmem{
@@ -71,7 +70,7 @@ struct Segment {
   int Delete(Key_t& key, size_t loc, size_t key_hash);
   Segment** Split(PMEMobjpool* pop);
 
-//  Pair _[kNumSlot];
+  //Pair _[kNumSlot];
   size_t local_depth;
   int64_t sema = 0;
   size_t pattern = 0;
@@ -79,8 +78,6 @@ struct Segment {
   TOID(struct Segment_pmem) seg_pmem;
   TOID(Pair) pairs;
 
-
-  
   Segment(PMEMobjpool *pop, size_t depth)
   :local_depth{depth}
   {
@@ -93,7 +90,7 @@ struct Segment {
     POBJ_ALLOC(pop, &pairs, Pair, sizeof(Pair)*kNumSlot, NULL, NULL);
     D_RW(seg_pmem)->pairs = pairs; 
     for(int i=0;i<kNumSlot;i++){
-	D_RW(pairs)[i].key = -1;
+	    D_RW(pairs)[i].key = -1;
     }
   }
   Segment(){
@@ -108,8 +105,8 @@ struct Segment {
     return D_RO(D_RO(seg_pmem)->pairs)[y].value;
   }
   void pair_insert_pmem(size_t y, Key_t key, Value_t value){
-	D_RW(D_RW(seg_pmem)->pairs)[y].key = key;	
-	D_RW(D_RW(seg_pmem)->pairs)[y].value = value;
+    D_RW(D_RW(seg_pmem)->pairs)[y].key = key;	
+    D_RW(D_RW(seg_pmem)->pairs)[y].value = value;
   }
   void load_pmem(PMEMobjpool* pop,TOID(struct Segment_pmem)  seg_pmem_){
 	seg_pmem = seg_pmem_;
@@ -117,9 +114,8 @@ struct Segment {
 	sema = D_RO(seg_pmem)->sema;
 	pattern = D_RO(seg_pmem)->pattern;
 	local_depth = D_RO(seg_pmem)->local_depth;
-//	kNumSlot = D_RO(seg_pmem)->pair_size;
-	
-  }
+  //	kNumSlot = D_RO(seg_pmem)->pair_size;
+	}
   ~Segment(void) {
   }
   size_t numElem(void); 
@@ -153,9 +149,9 @@ public:
     POBJ_ALLOC(pop, &segments, TOID(struct Segment_pmem), sizeof(TOID(struct Segment_pmem))*capacity, NULL,NULL);  
     D_RW(dir_pmem)->segments = segments;
   }
-   Directory(){
+  Directory(){
 
-   }
+  }
   ~Directory(void){
 
   }
@@ -165,7 +161,7 @@ public:
     POBJ_REALLOC(pop, &segments, TOID(struct Segment_pmem),capacity*sizeof(TOID(struct Segment_pmem)));
     D_RW(dir_pmem)->segments = segments;
     for(size_t i=capacity/2; i<capacity; i++){
-	D_RW(D_RW(dir_pmem)->segments)[i] = D_RO(D_RO(dir_pmem)->segments)[i-capacity/2];
+	    D_RW(D_RW(dir_pmem)->segments)[i] = D_RO(D_RO(dir_pmem)->segments)[i-capacity/2];
     }
   } 
   void segment_bind_pmem(size_t dir_index, struct Segment* s){
@@ -181,13 +177,13 @@ public:
     _ = new Segment*[capacity];
     segments = D_RO(dir_pmem)->segments;
     for(size_t i=0;i<capacity;i++){
-	TOID(struct Segment_pmem) seg_pmem = D_RO(segments)[i];
-        if(i == D_RO(seg_pmem)->pattern){
-	  _[i] = new Segment();
-	  _[i]->load_pmem(pop, seg_pmem);
-	}else{
-	  _[i] = _[D_RO(seg_pmem)->pattern];
-	}
+	    TOID(struct Segment_pmem) seg_pmem = D_RO(segments)[i];
+      if(i == D_RO(seg_pmem)->pattern){
+        _[i] = new Segment();
+        _[i]->load_pmem(pop, seg_pmem);
+      }else{
+        _[i] = _[D_RO(seg_pmem)->pattern];
+      }
     }
   } 
   bool Acquire(void) {
@@ -232,43 +228,40 @@ class CCEH {
     Directory* dir;
     size_t global_depth;
     int init_pmem(const char* path){
-
-  size_t pool_size = PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
-
-	if(access(path, F_OK) != 0){
-          pop = pmemobj_create(path, LAYOUT, pool_size, 0666);
-          //pop = pmemobj_create(path, LAYOUT, 8*1024*1024*1024, 0666);
-          if(pop==NULL){
-   		perror(path);
-   		exit(-1);
-          }
-    printf("Pmem pool size %.1lfGB\n", (double)pool_size/(1024.0*1024*1024));
-  	  cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
-	  POBJ_ALLOC(pop, &dir_pmem, struct Directory_pmem, sizeof(struct Directory_pmem), NULL,NULL);
-	  D_RW(cceh_pmem)->directories = dir_pmem;
-	  return 1;
-	}else{
-   	  pop = pmemobj_open(path, LAYOUT);
-	  if(pop==NULL){
-	    perror(path);
-	    exit(-1);	
-	  }
-	  cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
-	  global_depth = D_RO(cceh_pmem)->global_depth;
-	  dir_pmem = D_RO(cceh_pmem)->directories;
-          dir = new Directory();
-	  dir->load_pmem(pop, dir_pmem);
-	  return 0;
-	}
+      size_t pool_size = PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
+      if(access(path, F_OK) != 0){
+        pop = pmemobj_create(path, LAYOUT, pool_size, 0666);
+        //pop = pmemobj_create(path, LAYOUT, 8*1024*1024*1024, 0666);
+        if(pop==NULL){
+          perror(path);
+          exit(-1);
+        }
+        printf("Pmem pool size %.1lfGB\n", (double)pool_size/(1024.0*1024*1024));
+        cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
+        POBJ_ALLOC(pop, &dir_pmem, struct Directory_pmem, sizeof(struct Directory_pmem), NULL,NULL);
+        D_RW(cceh_pmem)->directories = dir_pmem;
+        return 1;
+      }else{
+        pop = pmemobj_open(path, LAYOUT);
+        if(pop==NULL){
+          perror(path);
+          exit(-1);	
+        }
+        cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
+        global_depth = D_RO(cceh_pmem)->global_depth;
+        dir_pmem = D_RO(cceh_pmem)->directories;
+        dir = new Directory();
+        dir->load_pmem(pop, dir_pmem);
+        return 0;
+      }
     }
-
     void constructor(size_t global_depth_){
-	global_depth = global_depth_;
-	D_RW(cceh_pmem)->global_depth = global_depth;
-	dir = new Directory(pop,global_depth, dir_pmem);
+      global_depth = global_depth_;
+      D_RW(cceh_pmem)->global_depth = global_depth;
+      dir = new Directory(pop,global_depth, dir_pmem);
     }
     void set_global_depth_pmem(size_t global_depth){
-	D_RW(cceh_pmem)->global_depth = global_depth;
+	    D_RW(cceh_pmem)->global_depth = global_depth;
     }
     void* operator new(size_t size) {
       void *ret;
