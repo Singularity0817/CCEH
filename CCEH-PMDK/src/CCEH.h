@@ -6,11 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <libpmemobj.h>
+#include <libpmem.h>
 #include <unistd.h>
 #include <cmath>
 #include <vector>
 #include "../util/pair.h"
 #include "../src/hash.h"
+//#include "../util/hash.h"
 
 #define LAYOUT "CCEH"
 #define TOID_ARRAY(x) TOID(x)
@@ -21,6 +23,7 @@ constexpr size_t kShift = kSegmentBits;
 constexpr size_t kSegmentSize = (1 << kSegmentBits) * 16 * 4;
 constexpr size_t kNumPairPerCacheLine = 4;
 constexpr size_t kNumCacheLine = 4;//4; infects the probe time, by default, it is 4
+constexpr size_t kOptaneUnitSize = 256;
 
 POBJ_LAYOUT_BEGIN(CCEH_LAYOUT);
 POBJ_LAYOUT_ROOT(CCEH_LAYOUT, struct CCEH_pmem);
@@ -35,8 +38,11 @@ struct Segment_pmem{
 	size_t local_depth;
 	int64_t sema;
 	size_t pattern;
+  unsigned l0_pair_num;
+  TOID(Pair) l0_pairs;
 	TOID(Pair) pairs;
 };
+
 struct Directory_pmem{
 	size_t capacity;
 	size_t depth;
@@ -44,13 +50,17 @@ struct Directory_pmem{
 	int sema = 0;
 	TOID_ARRAY(TOID(struct Segment_pmem)) segments;
 };
+
 struct CCEH_pmem{
 	size_t global_depth;
 	TOID(struct Directory_pmem) directories;	
 };
+
 struct Segment {
   static const size_t kNumSlot = kSegmentSize/sizeof(Pair);
   static const size_t kNumSlotMask = kNumSlot - 1;
+  static const size_t kBufferSlot = kOptaneUnitSize/sizeof(Pair);
+  static const size_t kL0Slot = kBufferSlot*4;
 
   void* operator new(size_t size) {
     void* ret;
@@ -69,56 +79,83 @@ struct Segment {
   bool Put(Key_t&, Value_t, size_t);
   int Delete(Key_t& key, size_t loc, size_t key_hash);
   Segment** Split(PMEMobjpool* pop);
+  void minor_compaction();
+  void major_compaction();
 
-  //Pair _[kNumSlot];
+  Pair dpairs[kBufferSlot];
+  unsigned dpair_num = 0;
+  TOID(Pair) l0_pairs;
+  unsigned l0_pair_num = 0;
   size_t local_depth;
   int64_t sema = 0;
   size_t pattern = 0;
+  PMEMobjpool *pool_handler;
   
   TOID(struct Segment_pmem) seg_pmem;
   TOID(Pair) pairs;
 
+  //size_t numElem(void);
+
   Segment(PMEMobjpool *pop, size_t depth)
   :local_depth{depth}
   {
+    pool_handler = pop;
     POBJ_ALLOC(pop, &seg_pmem, struct Segment_pmem, sizeof(struct Segment_pmem),NULL, NULL);
     D_RW(seg_pmem)->local_depth = local_depth;
     D_RW(seg_pmem)->sema = sema;
     D_RW(seg_pmem)->pattern = pattern;
     D_RW(seg_pmem)->pair_size = kNumSlot;
 
+    D_RW(seg_pmem)->l0_pair_num = l0_pair_num;
+    POBJ_ALLOC(pop, &l0_pairs, Pair, sizeof(Pair)*4*kBufferSlot, NULL, NULL);
+    D_RW(seg_pmem)->l0_pairs = l0_pairs;
+
     POBJ_ALLOC(pop, &pairs, Pair, sizeof(Pair)*kNumSlot, NULL, NULL);
-    D_RW(seg_pmem)->pairs = pairs; 
+    D_RW(seg_pmem)->pairs = pairs;
     for(int i=0;i<kNumSlot;i++){
 	    D_RW(pairs)[i].key = -1;
     }
   }
-  Segment(){
-  }
+
+  Segment(){ }
+
+  void load_pmem(PMEMobjpool *pop, TOID(struct Segment_pmem) seg_pmem_){
+    pool_handler = pop;
+    seg_pmem = seg_pmem_;
+    pairs = D_RO(seg_pmem)->pairs;
+    sema = D_RO(seg_pmem)->sema;
+    pattern = D_RO(seg_pmem)->pattern;
+    local_depth = D_RO(seg_pmem)->local_depth;
+
+    l0_pairs = D_RO(seg_pmem)->l0_pairs;
+    l0_pair_num = D_RO(seg_pmem)->l0_pair_num;
+    //kNumSlot = D_RO(seg_pmem)->pair_size;
+	}
+
+  ~Segment(void) { }
+
   void set_pattern_pmem(size_t pattern){
     D_RW(seg_pmem)->pattern = pattern;
   }
+
   Key_t get_key(size_t y){
     return D_RO(D_RO(seg_pmem)->pairs)[y].key;
   }
+
   Value_t get_value(size_t y){
     return D_RO(D_RO(seg_pmem)->pairs)[y].value;
   }
+
   void pair_insert_pmem(size_t y, Key_t key, Value_t value){
     D_RW(D_RW(seg_pmem)->pairs)[y].key = key;	
     D_RW(D_RW(seg_pmem)->pairs)[y].value = value;
   }
-  void load_pmem(PMEMobjpool* pop,TOID(struct Segment_pmem)  seg_pmem_){
-	seg_pmem = seg_pmem_;
-	pairs = D_RO(seg_pmem)->pairs;
-	sema = D_RO(seg_pmem)->sema;
-	pattern = D_RO(seg_pmem)->pattern;
-	local_depth = D_RO(seg_pmem)->local_depth;
-  //	kNumSlot = D_RO(seg_pmem)->pair_size;
-	}
-  ~Segment(void) {
+
+  void pair_insert_dram(Key_t key, Value_t value){
+    dpairs[dpair_num].key = key;
+    dpairs[dpair_num].value = value;
+    ++dpair_num;
   }
-  size_t numElem(void); 
 };
 
 struct Directory {
@@ -149,12 +186,8 @@ public:
     POBJ_ALLOC(pop, &segments, TOID(struct Segment_pmem), sizeof(TOID(struct Segment_pmem))*capacity, NULL,NULL);  
     D_RW(dir_pmem)->segments = segments;
   }
-  Directory(){
-
-  }
-  ~Directory(void){
-
-  }
+  Directory(){ }
+  ~Directory(void){ }
   void doubling_pmem(){
     D_RW(dir_pmem)->capacity = capacity;
     //printf("Doubling to %d\n",capacity); fflush(stdout);

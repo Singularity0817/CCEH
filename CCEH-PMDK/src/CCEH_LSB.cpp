@@ -156,22 +156,17 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
   }
   Key_t LOCK = INVALID;
   for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
-    auto slot = (loc + i) % kNumSlot;
-    //put_probe_time++;
+    //auto slot = (loc + i) % kNumSlot;
+    auto slot = (loc+i)&kNumSlotMask;
     Key_t key_ = get_key(slot);
     if (CAS(&key_, &LOCK, SENTINEL)) {
-      pair_insert_pmem(slot,key,value); 
-     
-// _[slot].value = value;      
-//      mfence();
-//      _[slot].key = key;
+      pair_insert_pmem(slot,key,value);
       ret = 0;
       break;
     } else {
       LOCK = INVALID;
     }
   }
-  //put_entry_num++;
   lock = sema;
   while (!CAS(&sema, &lock, lock-1)) {
     lock = sema;
@@ -220,6 +215,69 @@ Segment** Segment::Split(PMEMobjpool *pop) {
   return split;
 }
 
+void Segment::minor_compaction() {
+  // if (dpair_num < kBufferSlot) {
+  //   fprintf(stderr, "ERROR: Too early to triger minor compaction.\n");
+  // } else if (dpair_num > kBufferSlot) {
+  //   fprintf(stderr, "ERROR: Buffer overflown.\n");
+  // }
+  // if (l0_pair_num >= kL0Slot) {
+  //   fprintf(stderr, "ERROR: L0 over flown.\n");
+  // }
+  // pmem_memcpy(&(D_RW(l0_pairs)[l0_pair_num]),
+  //             dpairs,
+  //             kBufferSlot*sizeof(Pair),
+  //             PMEM_F_MEM_NONTEMPORAL);
+  // pmem_persist(&(D_RW(l0_pairs)[l0_pair_num]), kBufferSlot*sizeof(Pair));
+  // l0_pair_num += kBufferSlot;
+  // D_RW(seg_pmem)->l0_pair_num = l0_pair_num;
+  // dpair_num = 0;
+}
+
+void Segment::major_compaction() {
+  // Pair *l0_pair_buffer = (Pair *)malloc(kL0Slot*sizeof(Pair));
+  // pmem_memcpy(l0_pair_buffer, 
+  //             &(D_RO(l0_pairs)[0]), 
+  //             kL0Slot*sizeof(Pair), 
+  //             PMEM_F_MEM_NONTEMPORAL);
+  // Pair *pmem_pairs_buffer = (Pair *)malloc(kNumSlot*sizeof(Pair));
+  // pmem_memcpy(pmem_pairs_buffer,
+  //             &(D_RO(pairs)[0]),
+  //             kNumSlot*sizeof(Pair),
+  //             PMEM_F_MEM_NONTEMPORAL);
+  // for (unsigned i = 0; i < kL0Slot; ++i) {
+  //   size_t key_hash = h(&(l0_pair_buffer[i].key), sizeof(Key_t));
+  //   size_t loc = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
+  //   bool successed = false;
+  //   for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
+  //     if (pmem_pairs_buffer[(loc+i)&kNumSlotMask].key == -1) {
+  //       pmem_pairs_buffer[(loc+i)&kNumSlotMask].key = l0_pair_buffer[i].key;
+  //       pmem_pairs_buffer[(loc+i)&kNumSlotMask].value = l0_pair_buffer[i].value;
+  //       successed = true;
+  //       break;
+  //     }
+  //   }
+  //   if (!successed) {
+  //     fprintf(stderr, "ERROR: Failed to finish major compaction.\n");
+  //     exit(1);
+  //   }
+  // }
+  // TOID(Pair) new_pairs;
+  // POBJ_ALLOC(pool_handler, &new_pairs, Pair, sizeof(Pair)*kNumSlot, NULL, NULL);
+  // pmem_memcpy(&(D_RW(new_pairs)[0]), 
+  //             pmem_pairs_buffer, 
+  //             kNumSlot*sizeof(Pair),
+  //             PMEM_F_MEM_NONTEMPORAL);
+  // pmem_persist(&(D_RW(new_pairs)[0]), kNumSlot*sizeof(Pair));
+  // D_RW(seg_pmem)->pairs = new_pairs;
+  // D_RW(seg_pmem)->l0_pair_num = 0;
+  // TOID(Pair) temp = pairs;
+  // pairs = new_pairs;
+  // POBJ_FREE(D_RW(temp));
+  // l0_pair_num = 0;
+  // free(l0_pair_buffer);
+  // free(pmem_pairs_buffer);
+}
 
 void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x, Segment** s) {
   int depth_diff = global_depth - local_depth;
