@@ -22,3 +22,6 @@ CCEH-PMDK/throughput
 CCEH-PMDK/write
 CCEH-PMDK/write_ssd
 percentile
+.gitignore
+CCEH-PMDK/old_*
+CCEH-PMDK/cceh_test
