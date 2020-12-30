@@ -79,8 +79,8 @@ struct Segment {
   bool Put(Key_t&, Value_t, size_t);
   int Delete(Key_t& key, size_t loc, size_t key_hash);
   Segment** Split(PMEMobjpool* pop);
-  void minor_compaction();
-  void major_compaction();
+  int minor_compaction();
+  int major_compaction();
 
   Pair dpairs[kBufferSlot];
   unsigned dpair_num = 0;
@@ -93,6 +93,7 @@ struct Segment {
   
   TOID(struct Segment_pmem) seg_pmem;
   TOID(Pair) pairs;
+  bool locked = false;
 
   //size_t numElem(void);
 
@@ -133,6 +134,16 @@ struct Segment {
 	}
 
   ~Segment(void) { }
+
+  bool lock(void) {
+    bool status = false;
+    return CAS(&locked, &status, true);
+  }
+
+  bool unlock(void) {
+    bool status = true;
+    return CAS(&locked, &status, false);
+  }
 
   void set_pattern_pmem(size_t pattern){
     D_RW(seg_pmem)->pattern = pattern;
@@ -248,13 +259,14 @@ class CCEH {
     void Insert(Key_t&, Value_t);
     Value_t Get(Key_t&);
     int Delete(Key_t&);
-    /*bool InsertOnly(Key_t&, Value_t);
+    /*
+    bool InsertOnly(Key_t&, Value_t);
     bool Delete(Key_t&);
     Value_t FindAnyway(Key_t&);
     double Utilization(void);
     size_t Capacity(void);
     bool Recovery(void);
-*/
+    */
     TOID(struct CCEH_pmem) cceh_pmem;
     TOID(struct Directory_pmem) dir_pmem;
     PMEMobjpool *pop;
@@ -263,6 +275,8 @@ class CCEH {
     int init_pmem(const char* path){
       size_t pool_size = PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
       if(access(path, F_OK) != 0){
+        int sds_write_value = 0;
+		    pmemobj_ctl_set(NULL, "sds.at_create", &sds_write_value);
         pop = pmemobj_create(path, LAYOUT, pool_size, 0666);
         //pop = pmemobj_create(path, LAYOUT, 8*1024*1024*1024, 0666);
         if(pop==NULL){

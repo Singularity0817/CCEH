@@ -21,9 +21,9 @@ using namespace std;
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 2000*1024*1024;
-const int ServerNum = 8;
-const int ReservePow = 22 - (int)log2(ServerNum);
+const size_t InsertSize = 100;//1000*1024*1024;
+const int ServerNum = 1;
+const int ReservePow = 1;//22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
 
@@ -321,7 +321,7 @@ int main(int argc, char* argv[]){
         //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = 100*1024*1024;
+        unsigned entries_to_get = InsertSize;//100*1024*1024;
         Key_t t_key;
         size_t fail_get = 0;
         uint64_t rtime[1000];
@@ -329,7 +329,8 @@ int main(int argc, char* argv[]){
         //util::IPMWatcher watcher("cceh_get");
         //debug_perf_switch();
         for(unsigned i = 0; i < entries_to_get; i++){
-            t_key = u(re);
+            //t_key = u(re);
+            t_key = i;
             clock_gettime(CLOCK_REALTIME, &time_start);
             auto ret = HashTables[t_key%ServerNum]->Get(t_key);
             clock_gettime(CLOCK_REALTIME, &time_end);
@@ -351,9 +352,9 @@ int main(int argc, char* argv[]){
             << entries_to_get/(((double)elapsed)/1000000000)/1024/1024 << "Mops, min " << r_min 
             << ", max " << r_max << std::endl;
         std::cout << "Read Lat PDF" << std::endl;
-        for (int i = 0; i < 1000; i++) {
-            printf("%d %llu\n", i*10, rtime[i]);
-        }
+        // for (int i = 0; i < 1000; i++) {
+        //     printf("%d %llu\n", i*10, rtime[i]);
+        // }
         }
     }else{
         return 0;

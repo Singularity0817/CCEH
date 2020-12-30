@@ -101,76 +101,65 @@ void Directory::SanityCheck(void* addr) {
   }
 }*/
 int Segment::Delete(Key_t& key, size_t loc, size_t key_hash){
-  if(sema==-1) return 2;
-  if((key_hash & (size_t)pow(2, local_depth)-1) != pattern) return 2;
-  auto lock = sema;
-  int ret = 1;
-  while(!CAS(&sema, &lock, lock+1)){
-    lock = sema;
-  }
-   Key_t LOCK = key;
-  for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
-    auto slot = (loc + i) % kNumSlot;
-    Key_t key_ = get_key(slot);
-    if (CAS(&key_, &LOCK, SENTINEL)) {
-      pair_insert_pmem(slot,-1,-1); 
-      ret = 0;
-      break;
-    } else {
-      LOCK = key;
-    }
-  }
-  lock = sema;
-  while (!CAS(&sema, &lock, lock-1)) {
-    lock = sema;
-  }
-  return ret;
+  // if(sema==-1) return 2;
+  // if((key_hash & (size_t)pow(2, local_depth)-1) != pattern) return 2;
+  // auto lock = sema;
+  // int ret = 1;
+  // while(!CAS(&sema, &lock, lock+1)){
+  //   lock = sema;
+  // }
+  //  Key_t LOCK = key;
+  // for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
+  //   auto slot = (loc + i) % kNumSlot;
+  //   Key_t key_ = get_key(slot);
+  //   if (CAS(&key_, &LOCK, SENTINEL)) {
+  //     pair_insert_pmem(slot,-1,-1); 
+  //     ret = 0;
+  //     break;
+  //   } else {
+  //     LOCK = key;
+  //   }
+  // }
+  // lock = sema;
+  // while (!CAS(&sema, &lock, lock-1)) {
+  //   lock = sema;
+  // }
+  // return ret;
 }
 int CCEH::Delete(Key_t& key) {
-STARTOVER:
-  auto key_hash = h(&key, sizeof(key));
-  auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
+  return 0;
+// STARTOVER:
+//   auto key_hash = h(&key, sizeof(key));
+//   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
 
-RETRY:
-  auto x = (key_hash % dir->capacity);
-  auto target = dir->_[x];
-  //printf("{{{%d %d}}}\n",key,key_hash);
-  auto ret = target->Delete(key, y, key_hash);
+// RETRY:
+//   auto x = (key_hash % dir->capacity);
+//   auto target = dir->_[x];
+//   //printf("{{{%d %d}}}\n",key,key_hash);
+//   auto ret = target->Delete(key, y, key_hash);
 
-  if (ret == 1) {
-    return -1; //DATA NOT FOUND 
-  } else if (ret == 2) {
-    goto STARTOVER;
-  } else {
-    return 0;
-  }
+//   if (ret == 1) {
+//     return -1; //DATA NOT FOUND 
+//   } else if (ret == 2) {
+//     goto STARTOVER;
+//   } else {
+//     return 0;
+//   }
 }
 
 int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
   if (sema == -1) return 2;
   if ((key_hash & (size_t)pow(2, local_depth)-1) != pattern) return 2;
-  auto lock = sema;
-  int ret = 1;
-  while (!CAS(&sema, &lock, lock+1)) {
-    lock = sema;
+  int ret = 0;
+  while (!lock()) { asm("nop"); }
+  if (sema == -1) return 2;
+  printf("putting key %lu to d_table.\n", key);
+  pair_insert_dram(key, value);
+  if (dpair_num == kBufferSlot) {
+    ret = 1;
+    sema = -1;
   }
-  Key_t LOCK = INVALID;
-  for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
-    //auto slot = (loc + i) % kNumSlot;
-    auto slot = (loc+i)&kNumSlotMask;
-    Key_t key_ = get_key(slot);
-    if (CAS(&key_, &LOCK, SENTINEL)) {
-      pair_insert_pmem(slot,key,value);
-      ret = 0;
-      break;
-    } else {
-      LOCK = INVALID;
-    }
-  }
-  lock = sema;
-  while (!CAS(&sema, &lock, lock-1)) {
-    lock = sema;
-  }
+  unlock();
   return ret;
 }
 
@@ -215,68 +204,80 @@ Segment** Segment::Split(PMEMobjpool *pop) {
   return split;
 }
 
-void Segment::minor_compaction() {
-  // if (dpair_num < kBufferSlot) {
-  //   fprintf(stderr, "ERROR: Too early to triger minor compaction.\n");
-  // } else if (dpair_num > kBufferSlot) {
-  //   fprintf(stderr, "ERROR: Buffer overflown.\n");
-  // }
-  // if (l0_pair_num >= kL0Slot) {
-  //   fprintf(stderr, "ERROR: L0 over flown.\n");
-  // }
-  // pmem_memcpy(&(D_RW(l0_pairs)[l0_pair_num]),
-  //             dpairs,
-  //             kBufferSlot*sizeof(Pair),
-  //             PMEM_F_MEM_NONTEMPORAL);
-  // pmem_persist(&(D_RW(l0_pairs)[l0_pair_num]), kBufferSlot*sizeof(Pair));
-  // l0_pair_num += kBufferSlot;
-  // D_RW(seg_pmem)->l0_pair_num = l0_pair_num;
-  // dpair_num = 0;
+int Segment::minor_compaction() {
+  if (dpair_num < kBufferSlot) {
+    fprintf(stderr, "ERROR: Too early to triger minor compaction.\n");
+  } else if (dpair_num > kBufferSlot) {
+    fprintf(stderr, "ERROR: Buffer overflown.\n");
+  }
+  if (l0_pair_num >= kL0Slot) {
+    fprintf(stderr, "ERROR: L0 over flown.\n");
+  }
+  pmemobj_memcpy_persist(pool_handler, 
+                 &(D_RW(l0_pairs)[l0_pair_num]),
+                 dpairs,
+                 kBufferSlot*sizeof(Pair));
+  //pmem_persist(&(D_RW(l0_pairs)[l0_pair_num]), kBufferSlot*sizeof(Pair));
+  l0_pair_num += kBufferSlot;
+  D_RW(seg_pmem)->l0_pair_num = l0_pair_num;
+  dpair_num = 0;
+  int ret = (l0_pair_num == kL0Slot ? 1 : 0);
+  return ret;
 }
 
-void Segment::major_compaction() {
-  // Pair *l0_pair_buffer = (Pair *)malloc(kL0Slot*sizeof(Pair));
-  // pmem_memcpy(l0_pair_buffer, 
-  //             &(D_RO(l0_pairs)[0]), 
-  //             kL0Slot*sizeof(Pair), 
-  //             PMEM_F_MEM_NONTEMPORAL);
-  // Pair *pmem_pairs_buffer = (Pair *)malloc(kNumSlot*sizeof(Pair));
-  // pmem_memcpy(pmem_pairs_buffer,
-  //             &(D_RO(pairs)[0]),
-  //             kNumSlot*sizeof(Pair),
-  //             PMEM_F_MEM_NONTEMPORAL);
-  // for (unsigned i = 0; i < kL0Slot; ++i) {
-  //   size_t key_hash = h(&(l0_pair_buffer[i].key), sizeof(Key_t));
-  //   size_t loc = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
-  //   bool successed = false;
-  //   for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
-  //     if (pmem_pairs_buffer[(loc+i)&kNumSlotMask].key == -1) {
-  //       pmem_pairs_buffer[(loc+i)&kNumSlotMask].key = l0_pair_buffer[i].key;
-  //       pmem_pairs_buffer[(loc+i)&kNumSlotMask].value = l0_pair_buffer[i].value;
-  //       successed = true;
-  //       break;
-  //     }
-  //   }
-  //   if (!successed) {
-  //     fprintf(stderr, "ERROR: Failed to finish major compaction.\n");
-  //     exit(1);
-  //   }
-  // }
-  // TOID(Pair) new_pairs;
-  // POBJ_ALLOC(pool_handler, &new_pairs, Pair, sizeof(Pair)*kNumSlot, NULL, NULL);
-  // pmem_memcpy(&(D_RW(new_pairs)[0]), 
-  //             pmem_pairs_buffer, 
-  //             kNumSlot*sizeof(Pair),
-  //             PMEM_F_MEM_NONTEMPORAL);
-  // pmem_persist(&(D_RW(new_pairs)[0]), kNumSlot*sizeof(Pair));
-  // D_RW(seg_pmem)->pairs = new_pairs;
-  // D_RW(seg_pmem)->l0_pair_num = 0;
-  // TOID(Pair) temp = pairs;
-  // pairs = new_pairs;
-  // POBJ_FREE(D_RW(temp));
-  // l0_pair_num = 0;
-  // free(l0_pair_buffer);
-  // free(pmem_pairs_buffer);
+int Segment::major_compaction() {
+  int ret = 0;
+  Pair *l0_pair_buffer = (Pair *)malloc(kL0Slot*sizeof(Pair));
+  pmemobj_memcpy(pool_handler,
+                l0_pair_buffer, 
+                &(D_RO(l0_pairs)[0]), 
+                kL0Slot*sizeof(Pair),
+                PMEMOBJ_F_MEM_NONTEMPORAL);
+  Pair *pmem_pairs_buffer = (Pair *)malloc(kNumSlot*sizeof(Pair));
+  pmemobj_memcpy(pool_handler,
+                pmem_pairs_buffer,
+                &(D_RO(pairs)[0]),
+                kNumSlot*sizeof(Pair),
+                PMEMOBJ_F_MEM_NONTEMPORAL);
+  for (unsigned i = 0; i < kL0Slot; ++i) {
+    size_t key_hash = h(&(l0_pair_buffer[i].key), sizeof(Key_t));
+    size_t loc = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
+    bool successed = false;
+    for (unsigned j = 0; j < kNumPairPerCacheLine * kNumCacheLine; ++j) {
+      auto slot = (loc+j)&kNumSlotMask;
+      if (pmem_pairs_buffer[slot].key == -1) {
+        pmem_pairs_buffer[slot].key = l0_pair_buffer[i].key;
+        pmem_pairs_buffer[slot].value = l0_pair_buffer[i].value;
+        printf("  move key %lu to slot %lu\n", l0_pair_buffer[i].key, slot);
+        successed = true;
+        break;
+      }
+    }
+    if (!successed) {
+      fprintf(stderr, "ERROR: Failed to finish major compaction.\n");
+      exit(1);
+      ret = 1;
+      return ret;
+    }
+  }
+  TOID(Pair) new_pairs;
+  POBJ_ALLOC(pool_handler, &new_pairs, Pair, sizeof(Pair)*kNumSlot, NULL, NULL);
+  pmemobj_memcpy_persist(pool_handler,
+                        &(D_RW(new_pairs)[0]), 
+                        pmem_pairs_buffer, 
+                        kNumSlot*sizeof(Pair));
+  //pmem_persist(&(D_RW(new_pairs)[0]), kNumSlot*sizeof(Pair));
+  D_RW(seg_pmem)->pairs = new_pairs;
+  mfence();
+  D_RW(seg_pmem)->l0_pair_num = 0;
+  pmemobj_persist(pool_handler, D_RO(seg_pmem), sizeof(seg_pmem));
+  TOID(Pair) temp = pairs;
+  pairs = new_pairs;
+  POBJ_FREE(&temp);
+  l0_pair_num = 0;
+  free(l0_pair_buffer);
+  free(pmem_pairs_buffer);
+  return ret;
 }
 
 void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x, Segment** s) {
@@ -319,9 +320,27 @@ STARTOVER:
 RETRY:
   auto x = (key_hash % dir->capacity);
   auto target = dir->_[x];
+  printf("segment %lu\n", x);
   auto ret = target->Insert(key, value, y, key_hash);
 
   if (ret == 1) {
+    while(!target->lock()) { asm("nop"); }
+    printf("  minor compaction for seg %lu\n", x);
+    ret = target->minor_compaction();
+    if (ret == 1) {
+      printf("  major compaction for seg %lu\n", x);
+      ret = target->major_compaction();
+      if (ret == 1) {
+        // TODO: should do split when major compaction failed
+        fprintf(stderr, "Major compaction failed.\n");
+        exit(1);
+      }
+    }
+    target->sema = 0;
+    target->unlock();
+    return;
+
+
     Segment** s = target->Split(pop);
     if (s == nullptr) {
       goto RETRY;
@@ -370,6 +389,7 @@ RETRY:
     // Insert(key, value);
     goto STARTOVER;
   } else {
+    asm("nop");
     //clflush((char*)&dir->_[x]->_[y], 64);
   }
 }
@@ -411,12 +431,34 @@ CCEH::~CCEH(void)
 }
 
 Value_t CCEH::Get(Key_t& key) {
+  
+STARTOVER:
   auto key_hash = h(&key, sizeof(key));
   const size_t mask = dir->capacity-1;
   auto x = (key_hash & mask);
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
 
-  auto dir_ = dir->_[x];
+  auto seg = dir->_[x];
+  printf("getting key %lu in seg %lu, dpair_num %u\n", key, x, seg->dpair_num);
+  if (seg->sema == -1) goto STARTOVER;
+  while (!seg->lock()) { asm("nop"); }
+  //if (seg->sema == -1) goto STARTOVER;
+  for (unsigned i = 0; i < seg->dpair_num; ++i) {
+    if (seg->dpairs[i].key == key) {
+      Value_t v = seg->dpairs[i].value;
+      seg->unlock();
+      printf("  match in d_table pos %u\n", i);
+      return v;
+    }
+  }
+  for (unsigned i = 0; i < seg->l0_pair_num; ++i) {
+    if (D_RO(seg->l0_pairs)[i].key == key) {
+      Value_t v = D_RO(seg->l0_pairs)[i].value;
+      seg->unlock();
+      printf("  match in l0_table pos %u\n", i);
+      return v;
+    }
+  }
   //get_entry_num++;
   for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
     //auto slot = (y+i) % Segment::kNumSlot;
@@ -424,8 +466,13 @@ Value_t CCEH::Get(Key_t& key) {
     //get_probe_time++;
     Key_t key_ = dir->_[x]->get_key(slot);
     if (key_ == key) {
-      return dir->_[x]->get_value(slot);
+      Value_t v = dir->_[x]->get_value(slot);
+      seg->unlock();
+      printf("  match in pmem_table pos %lu\n", slot);
+      return v;
     }
   }
+  seg->unlock();
+  printf("  no match\n");
   return NONE;
 }
