@@ -15,15 +15,15 @@
 #include "./ycsb_2.h"
 using namespace std;
 
-//#define RESERVER_SPACE
+#define RESERVER_SPACE
 //#define RECORD_WA
 //#define YCSB_TEST
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 100;//1000*1024*1024;
-const int ServerNum = 1;
-const int ReservePow = 1;//22 - (int)log2(ServerNum);
+const size_t InsertSize = 1000*1024*1024;
+const int ServerNum = 8;
+const int ReservePow = 22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
 
@@ -103,7 +103,7 @@ void ServerThread(struct server_thread_param *p)
             Key_t key = i*ServerNum+id;
             db->Insert(key, ConstValue[i%2]);
             counter++;
-            if (counter % 10000 == 0) {
+            if ((counter & 0x3FFF) == 0) {
                 //__sync_fetch_and_add(&finishSize, counter);
                 finishSize.fetch_add(counter);
                 counter = 0;
@@ -273,7 +273,7 @@ int main(int argc, char* argv[]){
             new_progress = fs/(double)InsertSize*100.0;
             new_progress_checkpoint = GetTimeNsec();
             //if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
-            if (new_progress - old_progress >= 0.05) {
+            if (new_progress - old_progress >= 1) {
                 //printf("\rProgress %2.1lf%%", new_progress);
                 //clock_gettime(CLOCK_REALTIME, &time_middle);
                 //double span = (time_middle.tv_sec - time_start.tv_sec) + (time_middle.tv_nsec - time_start.tv_nsec)/1000000000.0;

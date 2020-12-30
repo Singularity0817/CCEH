@@ -153,7 +153,6 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
   int ret = 0;
   while (!lock()) { asm("nop"); }
   if (sema == -1) return 2;
-  printf("putting key %lu to d_table.\n", key);
   pair_insert_dram(key, value);
   if (dpair_num == kBufferSlot) {
     ret = 1;
@@ -214,9 +213,9 @@ int Segment::minor_compaction() {
     fprintf(stderr, "ERROR: L0 over flown.\n");
   }
   pmemobj_memcpy_persist(pool_handler, 
-                 &(D_RW(l0_pairs)[l0_pair_num]),
-                 dpairs,
-                 kBufferSlot*sizeof(Pair));
+                        &(D_RW(l0_pairs)[l0_pair_num]),
+                        dpairs,
+                        kBufferSlot*sizeof(Pair));
   //pmem_persist(&(D_RW(l0_pairs)[l0_pair_num]), kBufferSlot*sizeof(Pair));
   l0_pair_num += kBufferSlot;
   D_RW(seg_pmem)->l0_pair_num = l0_pair_num;
@@ -245,10 +244,9 @@ int Segment::major_compaction() {
     bool successed = false;
     for (unsigned j = 0; j < kNumPairPerCacheLine * kNumCacheLine; ++j) {
       auto slot = (loc+j)&kNumSlotMask;
-      if (pmem_pairs_buffer[slot].key == -1) {
+      if (pmem_pairs_buffer[slot].key == -1 || pmem_pairs_buffer[slot].key == l0_pair_buffer[i].key) {
         pmem_pairs_buffer[slot].key = l0_pair_buffer[i].key;
         pmem_pairs_buffer[slot].value = l0_pair_buffer[i].value;
-        printf("  move key %lu to slot %lu\n", l0_pair_buffer[i].key, slot);
         successed = true;
         break;
       }
@@ -320,15 +318,12 @@ STARTOVER:
 RETRY:
   auto x = (key_hash % dir->capacity);
   auto target = dir->_[x];
-  printf("segment %lu\n", x);
   auto ret = target->Insert(key, value, y, key_hash);
 
   if (ret == 1) {
     while(!target->lock()) { asm("nop"); }
-    printf("  minor compaction for seg %lu\n", x);
     ret = target->minor_compaction();
     if (ret == 1) {
-      printf("  major compaction for seg %lu\n", x);
       ret = target->major_compaction();
       if (ret == 1) {
         // TODO: should do split when major compaction failed
@@ -439,7 +434,6 @@ STARTOVER:
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
 
   auto seg = dir->_[x];
-  printf("getting key %lu in seg %lu, dpair_num %u\n", key, x, seg->dpair_num);
   if (seg->sema == -1) goto STARTOVER;
   while (!seg->lock()) { asm("nop"); }
   //if (seg->sema == -1) goto STARTOVER;
@@ -447,7 +441,6 @@ STARTOVER:
     if (seg->dpairs[i].key == key) {
       Value_t v = seg->dpairs[i].value;
       seg->unlock();
-      printf("  match in d_table pos %u\n", i);
       return v;
     }
   }
@@ -455,7 +448,6 @@ STARTOVER:
     if (D_RO(seg->l0_pairs)[i].key == key) {
       Value_t v = D_RO(seg->l0_pairs)[i].value;
       seg->unlock();
-      printf("  match in l0_table pos %u\n", i);
       return v;
     }
   }
@@ -468,11 +460,9 @@ STARTOVER:
     if (key_ == key) {
       Value_t v = dir->_[x]->get_value(slot);
       seg->unlock();
-      printf("  match in pmem_table pos %lu\n", slot);
       return v;
     }
   }
   seg->unlock();
-  printf("  no match\n");
   return NONE;
 }

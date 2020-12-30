@@ -22,7 +22,7 @@ constexpr size_t kMask = (1 << kSegmentBits)-1;
 constexpr size_t kShift = kSegmentBits;
 constexpr size_t kSegmentSize = (1 << kSegmentBits) * 16 * 4;
 constexpr size_t kNumPairPerCacheLine = 4;
-constexpr size_t kNumCacheLine = 4;//4; infects the probe time, by default, it is 4
+constexpr size_t kNumCacheLine = 16;//4; infects the probe time, by default, it is 4
 constexpr size_t kOptaneUnitSize = 256;
 
 POBJ_LAYOUT_BEGIN(CCEH_LAYOUT);
