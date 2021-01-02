@@ -10,6 +10,8 @@
 
 extern size_t perfCounter;
 
+#define NO_LOCK;
+
 //unsigned long put_entry_num = 0;
 //unsigned long put_probe_time = 0;
 //unsigned long get_entry_num = 0;
@@ -148,17 +150,23 @@ int CCEH::Delete(Key_t& key) {
 }
 
 int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
+#ifndef NO_LOCK
   if (sema == -1) return 2;
+#endif
   if ((key_hash & (size_t)pow(2, local_depth)-1) != pattern) return 2;
   int ret = 0;
+#ifndef NO_LOCK
   while (!lock()) { asm("nop"); }
   if (sema == -1) return 2;
+#endif
   pair_insert_dram(key, value);
   if (dpair_num == kBufferSlot) {
     ret = 1;
     sema = -1;
   }
+#ifndef NO_LOCK
   unlock();
+#endif
   return ret;
 }
 
@@ -429,7 +437,9 @@ RETRY:
   auto ret = target->Insert(key, value, y, key_hash);
 
   if (ret == 1) {
+#ifndef NO_LOCK
     while(!target->lock()) { asm("nop"); }
+#endif
     ret = target->minor_compaction();
     if (ret == 1) {
       ret = target->major_compaction();
@@ -437,7 +447,7 @@ RETRY:
         // TODO: should do split when major compaction failed
         //fprintf(stderr, "Major compaction failed.\n");
         //exit(1);
-        fprintf(stderr, "Spliting...\n");
+        //fprintf(stderr, "Spliting...\n");
         Segment **s = target->Split(pop);
         
         /* update directory */
@@ -454,6 +464,8 @@ RETRY:
           if (dir->_[x]->local_depth < global_depth) {  // normal split
             dir->LSBUpdate(s[0]->local_depth, global_depth, dir->capacity, x, s);
           } else {  // directory doubling
+            fprintf(stderr, "Doubling to %lu.\n", global_depth);
+            fflush(stderr);
             auto d = dir->_;
             auto _dir = new Segment*[dir->capacity*2];
             memcpy(_dir, d, sizeof(Segment*)*dir->capacity);
@@ -480,58 +492,60 @@ RETRY:
           asm("nop");
         }
         /* end of update directory */
-        fprintf(stderr, "Split successed\n");
+        //fprintf(stderr, "Split successed\n");
       }
     }
+#ifndef NO_LOCK
     target->sema = 0;
     target->unlock();
+#endif
     return;
 
 
-    Segment** s = target->Split(pop);
-    if (s == nullptr) {
-      goto RETRY;
-    }
+    // Segment** s = target->Split(pop);
+    // if (s == nullptr) {
+    //   goto RETRY;
+    // }
 
-    s[0]->pattern = (key_hash % (size_t)pow(2, s[0]->local_depth-1));
-    s[1]->pattern = s[0]->pattern + (1 << (s[0]->local_depth-1));
-    s[0]->set_pattern_pmem(s[0]->pattern);
-    s[1]->set_pattern_pmem(s[1]->pattern);
-    // Directory management
-    while (!dir->Acquire()) {
-      asm("nop");
-    }
-    { // CRITICAL SECTION - directory update
-      x = (key_hash % dir->capacity);
-      if (dir->_[x]->local_depth < global_depth) {  // normal split
-        dir->LSBUpdate(s[0]->local_depth, global_depth, dir->capacity, x, s);
-      } else {  // directory doubling
-        auto d = dir->_;
-        auto _dir = new Segment*[dir->capacity*2];
-        memcpy(_dir, d, sizeof(Segment*)*dir->capacity);
-        memcpy(_dir+dir->capacity, d, sizeof(Segment*)*dir->capacity);
-        _dir[x] = s[0];
-        _dir[x+dir->capacity] = s[1];
-        clflush((char*)&dir->_[0], sizeof(Segment*)*dir->capacity);
-        dir->_ = _dir;
-        clflush((char*)&dir->_, sizeof(void*));
-        dir->capacity *= 2;
-        clflush((char*)&dir->capacity, sizeof(size_t));
-        global_depth += 1;
-        clflush((char*)&global_depth, sizeof(global_depth));
+    // s[0]->pattern = (key_hash % (size_t)pow(2, s[0]->local_depth-1));
+    // s[1]->pattern = s[0]->pattern + (1 << (s[0]->local_depth-1));
+    // s[0]->set_pattern_pmem(s[0]->pattern);
+    // s[1]->set_pattern_pmem(s[1]->pattern);
+    // // Directory management
+    // while (!dir->Acquire()) {
+    //   asm("nop");
+    // }
+    // { // CRITICAL SECTION - directory update
+    //   x = (key_hash % dir->capacity);
+    //   if (dir->_[x]->local_depth < global_depth) {  // normal split
+    //     dir->LSBUpdate(s[0]->local_depth, global_depth, dir->capacity, x, s);
+    //   } else {  // directory doubling
+    //     auto d = dir->_;
+    //     auto _dir = new Segment*[dir->capacity*2];
+    //     memcpy(_dir, d, sizeof(Segment*)*dir->capacity);
+    //     memcpy(_dir+dir->capacity, d, sizeof(Segment*)*dir->capacity);
+    //     _dir[x] = s[0];
+    //     _dir[x+dir->capacity] = s[1];
+    //     clflush((char*)&dir->_[0], sizeof(Segment*)*dir->capacity);
+    //     dir->_ = _dir;
+    //     clflush((char*)&dir->_, sizeof(void*));
+    //     dir->capacity *= 2;
+    //     clflush((char*)&dir->capacity, sizeof(size_t));
+    //     global_depth += 1;
+    //     clflush((char*)&global_depth, sizeof(global_depth));
 
-        dir->doubling_pmem();
-        dir->segment_bind_pmem(x, s[0]);
-        dir->segment_bind_pmem(x+dir->capacity/2, s[1]);
-        set_global_depth_pmem(global_depth);
-        delete d;
-        // TODO: requiered to do this atomically
-      }
-    }  // End of critical section
-    while (!dir->Release()) {
-      asm("nop");
-    }
-    goto RETRY;
+    //     dir->doubling_pmem();
+    //     dir->segment_bind_pmem(x, s[0]);
+    //     dir->segment_bind_pmem(x+dir->capacity/2, s[1]);
+    //     set_global_depth_pmem(global_depth);
+    //     delete d;
+    //     // TODO: requiered to do this atomically
+    //   }
+    // }  // End of critical section
+    // while (!dir->Release()) {
+    //   asm("nop");
+    // }
+    // goto RETRY;
   } else if (ret == 2) {
     // Insert(key, value);
     goto STARTOVER;
@@ -546,6 +560,7 @@ CCEH::CCEH(const char* path)
 {
   if(init_pmem(path)){
     constructor(0);
+    std::cout << "initCap 1 depth 0" << std::endl;
     size_t capacity = dir->capacity;
     for(unsigned i=0;i<capacity;i++){
       dir->_[i] = new Segment(pop, global_depth);
@@ -587,14 +602,18 @@ STARTOVER:
 
   auto seg = dir->_[x];
   //printf("getting key %lu from segment %lu.\n", key, x);
+#ifndef NO_LOCK
   if (seg->sema == -1) goto STARTOVER;
   while (!seg->lock()) { asm("nop"); }
+#endif
   //if (seg->sema == -1) goto STARTOVER;
   for (unsigned i = 0; i < seg->dpair_num; ++i) {
     if (seg->dpairs[i].key == key) {
       Value_t v = seg->dpairs[i].value;
       //printf("  found in dram pos %u\n", i);
+#ifndef NO_LOCK
       seg->unlock();
+#endif
       return v;
     }
   }
@@ -602,7 +621,9 @@ STARTOVER:
     if (D_RO(seg->l0_pairs)[i].key == key) {
       Value_t v = D_RO(seg->l0_pairs)[i].value;
       //printf("  found in l0 pos %u\n", i);
+#ifndef NO_LOCK
       seg->unlock();
+#endif
       return v;
     }
   }
@@ -616,7 +637,9 @@ STARTOVER:
     if (key_ == key) {
       Value_t v = dir->_[x]->get_value(slot);
       //printf("  found in pmem pos %lu\n", slot);
+#ifndef NO_LOCK
       seg->unlock();
+#endif
       return v;
     }
   }

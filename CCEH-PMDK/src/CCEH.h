@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <cmath>
 #include <vector>
+#include <mutex>
 #include "../util/pair.h"
 #include "../src/hash.h"
 //#include "../util/hash.h"
@@ -24,6 +25,7 @@ constexpr size_t kSegmentSize = (1 << kSegmentBits) * 16 * 4;
 constexpr size_t kNumPairPerCacheLine = 4;
 constexpr size_t kNumCacheLine = 16;//4; infects the probe time, by default, it is 4
 constexpr size_t kOptaneUnitSize = 256;
+constexpr size_t kPoolSize = PMEMOBJ_MIN_POOL*1024;
 
 POBJ_LAYOUT_BEGIN(CCEH_LAYOUT);
 POBJ_LAYOUT_ROOT(CCEH_LAYOUT, struct CCEH_pmem);
@@ -90,6 +92,7 @@ struct Segment {
   int64_t sema = 0;
   size_t pattern = 0;
   PMEMobjpool *pool_handler;
+  //mutex m_;
   
   TOID(struct Segment_pmem) seg_pmem;
   TOID(Pair) pairs;
@@ -138,11 +141,13 @@ struct Segment {
   bool lock(void) {
     bool status = false;
     return CAS(&locked, &status, true);
+    //m_.lock();
   }
 
   bool unlock(void) {
     bool status = true;
     return CAS(&locked, &status, false);
+    //m_.unlock();
   }
 
   void set_pattern_pmem(size_t pattern){
@@ -273,7 +278,7 @@ class CCEH {
     Directory* dir;
     size_t global_depth;
     int init_pmem(const char* path){
-      size_t pool_size = PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
+      size_t pool_size = kPoolSize;//PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
       if(access(path, F_OK) != 0){
         int sds_write_value = 0;
 		    pmemobj_ctl_set(NULL, "sds.at_create", &sds_write_value);

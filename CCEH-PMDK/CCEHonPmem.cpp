@@ -15,15 +15,15 @@
 #include "./ycsb_2.h"
 using namespace std;
 
-//#define RESERVER_SPACE
+#define RESERVE_SPACE
 //#define RECORD_WA
 //#define YCSB_TEST
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 1000;//1000*1024*1024;
-const int ServerNum = 1;//8;
-const int ReservePow = 22 - (int)log2(ServerNum);
+const size_t InsertSize = 500*1024*1024;
+const int ServerNum = 8;//8;
+const int ReservePow = 21 - (int)log2(ServerNum);//22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
 
@@ -76,7 +76,7 @@ std::string zExecute(const std::string& cmd) {
 }
 
 int ReadyCount = 0;
-bool ThreadStart = false;
+atomic<bool> ThreadStart(false);
 
 struct server_thread_param {
     int id;
@@ -96,7 +96,7 @@ void ServerThread(struct server_thread_param *p)
     uint64_t counter = 0;
     __sync_fetch_and_add(&ReadyCount, 1);
     //std::cout << "worker " << id << " ready. " << ReadyCount << std::endl;
-    while(ThreadStart != true) {fflush(stdout);}
+    while(ThreadStart.load(std::memory_order_acquire) != true) {asm("nop");}
     //std::cout << "worker " << id << " begin to put " << std::endl;
     for (unsigned t = 0; t < testTimes; t++) {
         for (unsigned i = 0; i < InsertSizePerServer; i++) {
@@ -126,7 +126,7 @@ class DBTest:public KVBase {
             }
             for (int i = 0; i < ServerNum; i++) {
             string table_path = CCEH_PATH+std::to_string(i)+".data";
-#ifndef RESERVER_SPACE
+#ifndef RESERVE_SPACE
                 dbs_[i] = new CCEH(table_path.c_str());
 #else
                 dbs_[i] = new CCEH((size_t)pow(2, ReservePow), table_path.c_str());
@@ -178,7 +178,7 @@ int main(int argc, char* argv[]){
     for (int i = 0; i < ServerNum; i++) {
         string table_path = CCEH_PATH+std::to_string(i)+".data";
         std::cout << "Creating table with path " << table_path << std::endl;
-#ifndef RESERVER_SPACE
+#ifndef RESERVE_SPACE
         HashTables[i] = new CCEH(table_path.c_str());
 #else
         HashTables[i] = new CCEH((size_t)pow(2, ReservePow), table_path.c_str());
@@ -261,7 +261,7 @@ int main(int argc, char* argv[]){
         uint64_t put_start = GetTimeNsec();
         uint64_t old_progress_checkpoint = put_start;
         uint64_t new_progress_checkpoint = 0;
-        ThreadStart = true;
+        ThreadStart.store(true, std::memory_order_release);
 #ifdef RECORD_WA
         util::IPMWatcher watcher("cceh_put");
 #endif
@@ -321,7 +321,7 @@ int main(int argc, char* argv[]){
         //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = InsertSize;//100*1024*1024;
+        unsigned entries_to_get = 100*1024*1024;//InsertSize;//100*1024*1024;
         Key_t t_key;
         size_t fail_get = 0;
         uint64_t rtime[1000];
@@ -329,8 +329,8 @@ int main(int argc, char* argv[]){
         //util::IPMWatcher watcher("cceh_get");
         //debug_perf_switch();
         for(unsigned i = 0; i < entries_to_get; i++){
-            //t_key = u(re);
-            t_key = i;
+            t_key = u(re);
+            //t_key = i;
             clock_gettime(CLOCK_REALTIME, &time_start);
             auto ret = HashTables[t_key%ServerNum]->Get(t_key);
             clock_gettime(CLOCK_REALTIME, &time_end);
@@ -347,7 +347,12 @@ int main(int argc, char* argv[]){
             } else {
                 rtime[r_span/10]++;
             }
+            if ((i&0xFFF) == 0) {
+                fprintf(stderr, "\rget progress: %3.1lf%%", i*100.0/entries_to_get);
+                fflush(stderr);
+            }
         }
+        fprintf(stderr, "\n");
         //debug_perf_stop();
         std::cout << "Get Entries: " << entries_to_get << ", fail get" << fail_get << ", size " 
             << ((double)(entries_to_get*sizeof(size_t)*2))/1024/1024 << "MB, time: " << elapsed 
