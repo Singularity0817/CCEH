@@ -21,8 +21,8 @@ using namespace std;
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 1000;//500*1024*1024;
-const int ServerNum = 1;//8;
+const size_t InsertSize = 500*1024*1024;
+const int ServerNum = 8;//8;
 const int ReservePow = 21 - (int)log2(ServerNum);//22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
@@ -322,9 +322,10 @@ int main(int argc, char* argv[]){
         //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = InsertSize;//100*1024*1024;//InsertSize;//100*1024*1024;
+        unsigned entries_to_get = 100*1024*1024;//InsertSize;//100*1024*1024;
         Key_t t_key;
         size_t fail_get = 0;
+        size_t success_get = 0;
         uint64_t rtime[1000];
         for (int i = 0; i < 1000; i++) rtime[i] = 0;
         //util::IPMWatcher watcher("cceh_get");
@@ -341,7 +342,9 @@ int main(int argc, char* argv[]){
 	        if (r_span < r_min) r_min = r_span;
             if (ret == NONE) {
                 fail_get++;
-                break;
+                //break;
+            } else {
+                success_get++;
             }
             if (r_span > 10000) {
                 rtime[999]++;
@@ -355,7 +358,7 @@ int main(int argc, char* argv[]){
         }
         fprintf(stderr, "\n");
         //debug_perf_stop();
-        std::cout << "Get Entries: " << entries_to_get << ", fail get" << fail_get << ", size " 
+        std::cout << "Get Entries: " << success_get << ", fail get" << fail_get << ", size " 
             << ((double)(entries_to_get*sizeof(size_t)*2))/1024/1024 << "MB, time: " << elapsed 
             << "ns, avg_time " << ((double)elapsed)/entries_to_get << "ns, ops: " 
             << entries_to_get/(((double)elapsed)/1000000000)/1024/1024 << "Mops, min " << r_min 

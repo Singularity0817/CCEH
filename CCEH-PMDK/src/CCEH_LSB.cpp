@@ -365,10 +365,12 @@ int Segment::minor_compaction() {
   if (l0_pair_num >= kL0Slot) {
     fprintf(stderr, "ERROR: L0 over flown.\n");
   }
+  //fprintf(stderr, "P1, l0_pair_num %lu, imm_dpairs %lu\n", l0_pair_num, imm_dpairs.load());
   pmemobj_memcpy_persist(pool_handler, 
                         &(D_RW(l0_pairs)[l0_pair_num]),
                         imm_dpairs.load(std::memory_order_acquire),
                         kBufferSlot*sizeof(Pair));
+  
   //pmem_persist(&(D_RW(l0_pairs)[l0_pair_num]), kBufferSlot*sizeof(Pair));
   l0_pair_num += kBufferSlot;
   D_RW(seg_pmem)->l0_pair_num = l0_pair_num;
@@ -376,6 +378,7 @@ int Segment::minor_compaction() {
   spared_dpairs = imm_dpairs.load(std::memory_order_acquire);
   imm_dpairs.store(nullptr, std::memory_order_release);
   int ret = (l0_pair_num == kL0Slot ? 1 : 0);
+  //fprintf(stderr, " Minor compaction success.\n");
   return ret;
 }
 
@@ -400,7 +403,7 @@ int Segment::major_compaction() {
     for (unsigned j = 0; j < kNumPairPerCacheLine * kNumCacheLine; ++j) {
       auto slot = (loc+j)&kNumSlotMask;
       if (pmem_pairs_buffer[slot].key == -1 || pmem_pairs_buffer[slot].key == l0_pair_buffer[i].key) {
-        printf("   key %lu moved to pos %lu with old key %lu.\n", l0_pair_buffer[i].key, slot, pmem_pairs_buffer[slot].key);
+        //printf("   key %lu moved to pos %lu with old key %lu.\n", l0_pair_buffer[i].key, slot, pmem_pairs_buffer[slot].key);
         pmem_pairs_buffer[slot].key = l0_pair_buffer[i].key;
         pmem_pairs_buffer[slot].value = l0_pair_buffer[i].value;
         successed = true;
@@ -653,7 +656,7 @@ CCEH::~CCEH(void)
 }
 
 Value_t CCEH::Get(Key_t& key) {
-  
+  //printf("key %5lu", key);
 STARTOVER:
   auto key_hash = h(&key, sizeof(key));
   const size_t mask = dir->capacity-1;
@@ -669,7 +672,7 @@ STARTOVER:
   for (unsigned i = 0; i < seg->dpair_num; ++i) {
     if (seg->dpairs[i].key == key) {
       Value_t v = seg->dpairs[i].value;
-      printf("  found in dram pos %u\n", i);
+      //printf("  found in dram pos %u\n", i);
       //seg->unlock();
       return v;
     }
@@ -678,7 +681,7 @@ STARTOVER:
     for (unsigned i = 0; i < seg->kBufferSlot; ++i) {
       if (seg->imm_dpairs[i].key == key) {
         Value_t v = seg->imm_dpairs[i].value;
-        printf("  found in imm dram pos %u\n", i);
+        //printf("  found in imm dram pos %u\n", i);
         //seg->unlock();
         return v;
       }
@@ -687,7 +690,7 @@ STARTOVER:
   for (unsigned i = 0; i < seg->l0_pair_num; ++i) {
     if (D_RO(seg->l0_pairs)[i].key == key) {
       Value_t v = D_RO(seg->l0_pairs)[i].value;
-      printf("  found in l0 pos %u\n", i);
+      //printf("  found in l0 pos %u\n", i);
       //seg->unlock();
       return v;
     }
@@ -701,12 +704,12 @@ STARTOVER:
     //printf("  checking slot %lu with key %lu.\n", slot, key_);
     if (key_ == key) {
       Value_t v = dir->_[x]->get_value(slot);
-      printf("  found in pmem pos %lu\n", slot);
+      //printf("  found in pmem pos %lu\n", slot);
       //seg->unlock();
       return v;
     }
   }
-  printf("  not found\n");
+  //printf("  not found\n");
   //seg->unlock();
   return NONE;
 }
@@ -722,13 +725,13 @@ void CCEH::compactor(CCEH *db) {
         //fprintf(stderr, "Minor compact segment %lu.\n", i);
         int res = target->minor_compaction();
         if (res == 1) {/* need major compaction */
-          fprintf(stderr, "Major compact segment %lu.\n", i);
+          //fprintf(stderr, " Major compact segment %lu.\n", i);
           res = target->major_compaction();
           if (res == 1) {/* major compaction failed, need to split the segment */
-            fprintf(stderr, "Splitting segment %lu....", i);
+            //fprintf(stderr, "   Splitting segment %lu....\n", i);
             target->sema = -1;
             Segment **s = target->Split(db->pop);
-            fprintf(stderr, " generate two split segment, ");
+            
             Key_t key = D_RO(target->l0_pairs)[0].key;
             size_t key_hash = h(&key, sizeof(key));
             /* update directory */
@@ -766,6 +769,8 @@ void CCEH::compactor(CCEH *db) {
                 db->dir->segment_bind_pmem(x+db->dir->capacity/2, s[1]);
                 db->set_global_depth_pmem(db->global_depth);
                 delete d;
+                //fprintf(stderr, "   finish doubling %lu.\n", db->global_depth);
+                //fflush(stderr);
                 // TODO: requiered to do this atomically
               }
             }  // End of critical section
@@ -773,7 +778,7 @@ void CCEH::compactor(CCEH *db) {
               asm("nop");
             }
             //delete target;
-            fprintf(stderr, " successed\n", i);
+            //fprintf(stderr, " successed\n", i);
           }
         }
         target->cv_.notify_all();

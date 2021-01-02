@@ -117,6 +117,7 @@ struct Segment {
   {
     dpairs = (Pair *)malloc(kBufferSlot*sizeof(Pair));
     spared_dpairs = (Pair *)malloc(kBufferSlot*sizeof(Pair));
+    imm_dpairs.store(nullptr, std::memory_order_release);
     pool_handler = pop;
     POBJ_ALLOC(pop, &seg_pmem, struct Segment_pmem, sizeof(struct Segment_pmem),NULL, NULL);
     D_RW(seg_pmem)->local_depth = local_depth;
