@@ -15,14 +15,14 @@
 #include "./ycsb_2.h"
 using namespace std;
 
-#define RESERVER_SPACE
+//#define RESERVER_SPACE
 //#define RECORD_WA
 //#define YCSB_TEST
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 1000*1024*1024;
-const int ServerNum = 8;
+const size_t InsertSize = 1000;//1000*1024*1024;
+const int ServerNum = 1;//8;
 const int ReservePow = 22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
@@ -338,7 +338,10 @@ int main(int argc, char* argv[]){
 	        elapsed += r_span;
 	        if (r_span > r_max) r_max = r_span;
 	        if (r_span < r_min) r_min = r_span;
-            if (ret == NONE) fail_get++;
+            if (ret == NONE) {
+                fail_get++;
+                break;
+            }
             if (r_span > 10000) {
                 rtime[999]++;
             } else {

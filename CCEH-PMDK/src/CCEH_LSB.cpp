@@ -165,7 +165,8 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
 
 void Segment::Insert4split(Key_t& key, Value_t value, size_t loc) {
   for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
-    auto slot = (loc+i) % kNumSlot;
+    //auto slot = (loc+i) % kNumSlot;
+    auto slot = (loc+i)&kNumSlotMask;
     Key_t key_ = get_key(slot);
     if (key_ == INVALID) {
       pair_insert_pmem(slot,key,value);
@@ -176,30 +177,135 @@ void Segment::Insert4split(Key_t& key, Value_t value, size_t loc) {
 
 Segment** Segment::Split(PMEMobjpool *pop) {
   using namespace std;
-  int64_t lock = 0;
-  if (!CAS(&sema, &lock, -1)) return nullptr;
+  //int64_t lock = 0;
+  //if (!CAS(&sema, &lock, -1)) return nullptr;
+  Pair *l0_pair_buffer = (Pair *)malloc(kL0Slot*sizeof(Pair));
+  pmemobj_memcpy(pool_handler,
+                l0_pair_buffer, 
+                &(D_RO(l0_pairs)[0]), 
+                kL0Slot*sizeof(Pair),
+                PMEMOBJ_F_MEM_NONTEMPORAL);
+  Pair *pmem_pairs_buffer = (Pair *)malloc(kNumSlot*sizeof(Pair));
+  pmemobj_memcpy(pool_handler,
+                pmem_pairs_buffer,
+                &(D_RO(pairs)[0]),
+                kNumSlot*sizeof(Pair),
+                PMEMOBJ_F_MEM_NONTEMPORAL);
 
- Segment** split = new Segment*[2];
+  Segment** split = new Segment*[2];
+
   split[0] = new Segment(pop, local_depth+1);
+  Pair *pmem_pairs_buffer_s1 = (Pair *)malloc(kNumSlot*sizeof(Pair));
+  pmemobj_memcpy(pool_handler,
+                pmem_pairs_buffer_s1,
+                &(D_RO(split[0]->pairs)[0]),
+                kNumSlot*sizeof(Pair),
+                PMEMOBJ_F_MEM_NONTEMPORAL);
+
   split[1] = new Segment(pop, local_depth+1);
+  Pair *pmem_pairs_buffer_s2 = (Pair *)malloc(kNumSlot*sizeof(Pair));
+  pmemobj_memcpy(pool_handler,
+                pmem_pairs_buffer_s2,
+                &(D_RO(split[1]->pairs)[0]),
+                kNumSlot*sizeof(Pair),
+                PMEMOBJ_F_MEM_NONTEMPORAL);
   //printf("Split\n");
   for (unsigned i = 0; i < kNumSlot; ++i) {
-    //auto key_hash = h(&_[i].key, sizeof(Key_t));
-    Key_t key_ = get_key(i);
-    Value_t value_ = get_value(i);
-    auto key_hash = h(&key_, sizeof(Key_t));
-    if (key_hash & ((size_t) 1 << (local_depth))) {
-      split[1]->Insert4split
-        (key_, value_, (key_hash >> (8*sizeof(key_hash)-kShift))*kNumPairPerCacheLine);
+    if (pmem_pairs_buffer[i].key == INVALID) continue;
+    auto key_hash = h(&(pmem_pairs_buffer[i].key), sizeof(Key_t));
+    auto loc = (key_hash >> (8*sizeof(key_hash)-kShift))*kNumPairPerCacheLine;
+    bool success = false;
+    if (!(key_hash & ((size_t) 1 << (local_depth)))) {
+      for (unsigned j = 0; j < kNumPairPerCacheLine * kNumCacheLine; ++j) {
+        auto slot = (loc+j)&kNumSlotMask;
+        if (pmem_pairs_buffer_s1[slot].key == INVALID || 
+              pmem_pairs_buffer_s1[slot].key == pmem_pairs_buffer[i].key) {
+          //printf("  move key %lu to s1 slot %lu\n", pmem_pairs_buffer[i].key, slot);
+          pmem_pairs_buffer_s1[slot].key = pmem_pairs_buffer[i].key;
+          pmem_pairs_buffer_s1[slot].value = pmem_pairs_buffer[i].value;
+          success = true;
+          break;
+        }
+      }
     } else {
-      split[0]->Insert4split
-        (key_, value_, (key_hash >> (8*sizeof(key_hash)-kShift))*kNumPairPerCacheLine);
+      for (unsigned j = 0; j < kNumPairPerCacheLine * kNumCacheLine; ++j) {
+        auto slot = (loc+j)&kNumSlotMask;
+        if (pmem_pairs_buffer_s2[slot].key == INVALID || 
+              pmem_pairs_buffer_s2[slot].key == pmem_pairs_buffer[i].key) {
+          //printf("  move key %lu to s2 slot %lu\n", pmem_pairs_buffer[i].key, slot);
+          pmem_pairs_buffer_s2[slot].key = pmem_pairs_buffer[i].key;
+          pmem_pairs_buffer_s2[slot].value = pmem_pairs_buffer[i].value;
+          success = true;
+          break;
+        }
+      }
+    }
+    if (!success) {
+      fprintf(stderr, "Failed to split segment!\n");
+      fflush(stderr);
+      exit(1);
     }
   }
 
+  for (unsigned i = 0; i < kL0Slot; ++i) {
+    auto key_hash = h(&(l0_pair_buffer[i].key), sizeof(Key_t));
+    auto loc = (key_hash >> (8*sizeof(key_hash)-kShift))*kNumPairPerCacheLine;
+    bool success = false;
+    if (!(key_hash & ((size_t) 1 << (local_depth)))) {
+      for (unsigned j = 0; j < kNumPairPerCacheLine * kNumCacheLine; ++j) {
+        auto slot = (loc+j)&kNumSlotMask;
+        if (pmem_pairs_buffer_s1[slot].key == INVALID || 
+              pmem_pairs_buffer_s1[slot].key == l0_pair_buffer[i].key) {
+          //printf("  move key %lu to s1 slot %lu\n", l0_pair_buffer[i].key, slot);
+          pmem_pairs_buffer_s1[slot].key = l0_pair_buffer[i].key;
+          pmem_pairs_buffer_s1[slot].value = l0_pair_buffer[i].value;
+          success = true;
+          break;
+        }
+      }
+    } else {
+      for (unsigned j = 0; j < kNumPairPerCacheLine * kNumCacheLine; ++j) {
+        auto slot = (loc+j)&kNumSlotMask;
+        if (pmem_pairs_buffer_s2[slot].key == INVALID || 
+              pmem_pairs_buffer_s2[slot].key == l0_pair_buffer[i].key) {
+          //printf("  move key %lu to s2 slot %lu\n", l0_pair_buffer[i].key, slot);
+          pmem_pairs_buffer_s2[slot].key = l0_pair_buffer[i].key;
+          pmem_pairs_buffer_s2[slot].value = l0_pair_buffer[i].value;
+          success = true;
+          break;
+        }
+      }
+    }
+    if (!success) {
+      fprintf(stderr, "Failed to split segment!\n");
+      fflush(stderr);
+      exit(1);
+    }
+  }
+  pmemobj_memcpy_persist(pop,
+                        &D_RW(split[0]->pairs)[0],
+                        pmem_pairs_buffer_s1,
+                        kNumSlot*sizeof(Pair));
+  // for (unsigned i = 0; i < kNumSlot; ++i) {
+  //   if (D_RO(split[0]->pairs)[i].key != pmem_pairs_buffer_s1[i].key) {
+  //     fprintf(stderr, "ERROR: failed to persist new segment.\n");
+  //   }
+  // }
+  pmemobj_memcpy_persist(pop,
+                        &D_RW(split[1]->pairs)[0],
+                        pmem_pairs_buffer_s2,
+                        kNumSlot*sizeof(Pair));
+  // for (unsigned i = 0; i < kNumSlot; ++i) {
+  //   if (D_RO(split[1]->pairs)[i].key != pmem_pairs_buffer_s2[i].key) {
+  //     fprintf(stderr, "ERROR: failed to persist new segment.\n");
+  //   }
+  // }
   clflush((char*)split[0], sizeof(Segment));
   clflush((char*)split[1], sizeof(Segment));
-
+  free(l0_pair_buffer);
+  free(pmem_pairs_buffer);
+  free(pmem_pairs_buffer_s1);
+  free(pmem_pairs_buffer_s2);
   return split;
 }
 
@@ -252,8 +358,10 @@ int Segment::major_compaction() {
       }
     }
     if (!successed) {
-      fprintf(stderr, "ERROR: Failed to finish major compaction.\n");
-      exit(1);
+      //fprintf(stderr, "ERROR: Failed to finish major compaction.\n");
+      //exit(1);
+      free(l0_pair_buffer);
+      free(pmem_pairs_buffer);
       ret = 1;
       return ret;
     }
@@ -327,8 +435,52 @@ RETRY:
       ret = target->major_compaction();
       if (ret == 1) {
         // TODO: should do split when major compaction failed
-        fprintf(stderr, "Major compaction failed.\n");
-        exit(1);
+        //fprintf(stderr, "Major compaction failed.\n");
+        //exit(1);
+        fprintf(stderr, "Spliting...\n");
+        Segment **s = target->Split(pop);
+        
+        /* update directory */
+        s[0]->pattern = (key_hash % (size_t)pow(2, s[0]->local_depth-1));
+        s[1]->pattern = s[0]->pattern + (1 << (s[0]->local_depth-1));
+        s[0]->set_pattern_pmem(s[0]->pattern);
+        s[1]->set_pattern_pmem(s[1]->pattern);
+        // Directory management
+        while (!dir->Acquire()) {
+          asm("nop");
+        }
+        { // CRITICAL SECTION - directory update
+          x = (key_hash % dir->capacity);
+          if (dir->_[x]->local_depth < global_depth) {  // normal split
+            dir->LSBUpdate(s[0]->local_depth, global_depth, dir->capacity, x, s);
+          } else {  // directory doubling
+            auto d = dir->_;
+            auto _dir = new Segment*[dir->capacity*2];
+            memcpy(_dir, d, sizeof(Segment*)*dir->capacity);
+            memcpy(_dir+dir->capacity, d, sizeof(Segment*)*dir->capacity);
+            _dir[x] = s[0];
+            _dir[x+dir->capacity] = s[1];
+            clflush((char*)&dir->_[0], sizeof(Segment*)*dir->capacity);
+            dir->_ = _dir;
+            clflush((char*)&dir->_, sizeof(void*));
+            dir->capacity *= 2;
+            clflush((char*)&dir->capacity, sizeof(size_t));
+            global_depth += 1;
+            clflush((char*)&global_depth, sizeof(global_depth));
+
+            dir->doubling_pmem();
+            dir->segment_bind_pmem(x, s[0]);
+            dir->segment_bind_pmem(x+dir->capacity/2, s[1]);
+            set_global_depth_pmem(global_depth);
+            delete d;
+            // TODO: requiered to do this atomically
+          }
+        }  // End of critical section
+        while (!dir->Release()) {
+          asm("nop");
+        }
+        /* end of update directory */
+        fprintf(stderr, "Split successed\n");
       }
     }
     target->sema = 0;
@@ -434,12 +586,14 @@ STARTOVER:
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
 
   auto seg = dir->_[x];
+  //printf("getting key %lu from segment %lu.\n", key, x);
   if (seg->sema == -1) goto STARTOVER;
   while (!seg->lock()) { asm("nop"); }
   //if (seg->sema == -1) goto STARTOVER;
   for (unsigned i = 0; i < seg->dpair_num; ++i) {
     if (seg->dpairs[i].key == key) {
       Value_t v = seg->dpairs[i].value;
+      //printf("  found in dram pos %u\n", i);
       seg->unlock();
       return v;
     }
@@ -447,6 +601,7 @@ STARTOVER:
   for (unsigned i = 0; i < seg->l0_pair_num; ++i) {
     if (D_RO(seg->l0_pairs)[i].key == key) {
       Value_t v = D_RO(seg->l0_pairs)[i].value;
+      //printf("  found in l0 pos %u\n", i);
       seg->unlock();
       return v;
     }
@@ -457,12 +612,15 @@ STARTOVER:
     auto slot = (y+i) & Segment::kNumSlotMask;
     //get_probe_time++;
     Key_t key_ = dir->_[x]->get_key(slot);
+    //printf("  checking slot %lu with key %lu.\n", slot, key_);
     if (key_ == key) {
       Value_t v = dir->_[x]->get_value(slot);
+      //printf("  found in pmem pos %lu\n", slot);
       seg->unlock();
       return v;
     }
   }
+  //printf("  not found\n");
   seg->unlock();
   return NONE;
 }
