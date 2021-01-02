@@ -11,11 +11,12 @@
 #include <cmath>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <thread>
 #include "../util/pair.h"
 #include "../src/hash.h"
-#include "./wal.h"
+//#include "./wal.h"
 //#include "../util/hash.h"
 //#include "../util/persist.h"
 //#include "../util/hash.h"
@@ -106,7 +107,8 @@ struct Segment {
   TOID(struct Segment_pmem) seg_pmem;
   TOID(Pair) pairs;
   bool locked = false;
-  mutex m_;
+  std::mutex m_;
+  std::condition_variable cv_;
 
   //size_t numElem(void);
 
@@ -295,7 +297,7 @@ class CCEH {
     PMEMobjpool *pop;
     Directory* dir;
     size_t global_depth;
-    Wal *log;
+//    Wal *log;
     std::atomic<bool> shutting_down;
     std::thread background_worker;
     bool background_worker_working = false;
@@ -314,10 +316,10 @@ class CCEH {
         cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
         POBJ_ALLOC(pop, &dir_pmem, struct Directory_pmem, sizeof(struct Directory_pmem), NULL,NULL);
         D_RW(cceh_pmem)->directories = dir_pmem;
-        string log_path(path);
-        log_path += ".log";
-        log = new Wal();
-        log->create(log_path.c_str(), kPoolSize);
+//        string log_path(path);
+//        log_path += ".log";
+//        log = new Wal();
+//        log->create(log_path.c_str(), kPoolSize);
         return 1;
       }else{
         pop = pmemobj_open(path, LAYOUT);
@@ -330,10 +332,10 @@ class CCEH {
         dir_pmem = D_RO(cceh_pmem)->directories;
         dir = new Directory();
         dir->load_pmem(pop, dir_pmem);
-        string log_path(path);
-        log_path += ".log";
-        log = new Wal();
-        log->open(log_path.c_str());
+//        string log_path(path);
+//        log_path += ".log";
+//        log = new Wal();
+//        log->open(log_path.c_str());
         return 0;
       }
     }

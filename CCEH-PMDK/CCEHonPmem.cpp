@@ -322,7 +322,7 @@ int main(int argc, char* argv[]){
         //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = 100*1024*1024;//InsertSize;//100*1024*1024;
+        unsigned entries_to_get = InsertSize;//100*1024*1024;//InsertSize;//100*1024*1024;
         Key_t t_key;
         size_t fail_get = 0;
         uint64_t rtime[1000];

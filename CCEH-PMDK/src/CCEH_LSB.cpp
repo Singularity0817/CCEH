@@ -154,13 +154,16 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
   if ((key_hash & (size_t)pow(2, local_depth)-1) != pattern) return 2;
   int ret = 0;
   //while (!lock()) { asm("nop"); }
-  lock();
+  //lock();
+  std::unique_lock<std::mutex> lck(m_);
   //if (sema == -1) return 2;
   pair_insert_dram(key, value);
   link_head = value;
 
   if (dpair_num == kBufferSlot) { /* change to imm_dpairs */
-    while(imm_dpairs.load(std::memory_order_acquire) != nullptr) {asm("nop");}
+    //while(imm_dpairs.load(std::memory_order_acquire) != nullptr) {asm("nop");}
+    cv_.wait(lck, [this]{return (this->imm_dpairs.load(std::memory_order_acquire) == nullptr);});
+    if (sema == -1) return 0;
     imm_dpairs.store(dpairs, std::memory_order_release);
     if (spared_dpairs == nullptr) {
       fprintf(stderr, "The spared dpairs should not be empty!\n");
@@ -174,7 +177,7 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
     //ret = 1;
     //sema = -1;
   }
-  unlock();
+  //unlock();
   return ret;
 }
 
@@ -397,6 +400,7 @@ int Segment::major_compaction() {
     for (unsigned j = 0; j < kNumPairPerCacheLine * kNumCacheLine; ++j) {
       auto slot = (loc+j)&kNumSlotMask;
       if (pmem_pairs_buffer[slot].key == -1 || pmem_pairs_buffer[slot].key == l0_pair_buffer[i].key) {
+        printf("   key %lu moved to pos %lu with old key %lu.\n", l0_pair_buffer[i].key, slot, pmem_pairs_buffer[slot].key);
         pmem_pairs_buffer[slot].key = l0_pair_buffer[i].key;
         pmem_pairs_buffer[slot].value = l0_pair_buffer[i].value;
         successed = true;
@@ -466,7 +470,7 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
 
 void CCEH::Insert(Key_t& key, char *value) {
   bool log_entry_inserted = false;
-  size_t log_entry_pos = INVALID;
+  size_t log_entry_pos = reinterpret_cast<Value_t>(value);//INVALID;
 STARTOVER:
   auto key_hash = h(&key, sizeof(key));
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
@@ -474,21 +478,21 @@ STARTOVER:
 RETRY:
   auto x = (key_hash % dir->capacity);
   auto target = dir->_[x];
-  if (!log_entry_inserted) {
-    size_t entry_size = 24+strlen(value)+1;
-    char *log_entry = (char *)malloc(entry_size);
-    *(Key_t *)log_entry = key;
-    *(size_t *)(log_entry+8) = target->link_head;
-    *(size_t *)(log_entry+16) = strlen(value)+1;
-    memcpy(log_entry+24, value, strlen(value)+1);
-    log_entry_pos = log->append(log_entry, entry_size);
-    log_entry_inserted = true;
-  }
+  // if (!log_entry_inserted) {
+  //   size_t entry_size = 24+strlen(value)+1;
+  //   char *log_entry = (char *)malloc(entry_size);
+  //   *(Key_t *)log_entry = key;
+  //   *(size_t *)(log_entry+8) = target->link_head;
+  //   *(size_t *)(log_entry+16) = strlen(value)+1;
+  //   memcpy(log_entry+24, value, strlen(value)+1);
+  //   log_entry_pos = log->append(log_entry, entry_size);
+  //   log_entry_inserted = true;
+  // }
   //auto ret = target->Insert(key, value, y, key_hash);
   auto ret = target->Insert(key, log_entry_pos, y, key_hash);
   if (ret && !background_worker_working) {
     background_worker_working = true;
-    background_worker = thread(compactor, this);
+    background_worker = std::thread(compactor, this);
   }
   return;
 
@@ -640,6 +644,8 @@ CCEH::CCEH(size_t initCap, const char* path)
 
 CCEH::~CCEH(void)
 {
+  shutting_down.store(true, std::memory_order_release);
+  background_worker.join();
   std::cout << "SizeofDirectly: " << sizeof(struct Directory) << ", SizeofSegments: " << dir->segment_size() << std::endl
             << "SegmentNum: " << dir->segment_num() << ", SingleSegmentSize: " << sizeof(struct Segment) << std::endl;
   //std::cout << "Total entries put: " << put_entry_num << ", probe time per entry: " << put_probe_time/(double)put_entry_num << std::endl;
@@ -656,28 +662,33 @@ STARTOVER:
 
   auto seg = dir->_[x];
   //printf("getting key %lu from segment %lu.\n", key, x);
-#ifndef NO_LOCK
   if (seg->sema == -1) goto STARTOVER;
-  while (!seg->lock()) { asm("nop"); }
-#endif
-  //if (seg->sema == -1) goto STARTOVER;
+  //while (!seg->lock()) { asm("nop"); }
+  std::lock_guard<std::mutex> lck(seg->m_);
+  if (seg->sema == -1) goto STARTOVER;
   for (unsigned i = 0; i < seg->dpair_num; ++i) {
     if (seg->dpairs[i].key == key) {
       Value_t v = seg->dpairs[i].value;
-      //printf("  found in dram pos %u\n", i);
-#ifndef NO_LOCK
-      seg->unlock();
-#endif
+      printf("  found in dram pos %u\n", i);
+      //seg->unlock();
       return v;
+    }
+  }
+  if (seg->imm_dpairs.load(std::memory_order_acquire) != nullptr) {
+    for (unsigned i = 0; i < seg->kBufferSlot; ++i) {
+      if (seg->imm_dpairs[i].key == key) {
+        Value_t v = seg->imm_dpairs[i].value;
+        printf("  found in imm dram pos %u\n", i);
+        //seg->unlock();
+        return v;
+      }
     }
   }
   for (unsigned i = 0; i < seg->l0_pair_num; ++i) {
     if (D_RO(seg->l0_pairs)[i].key == key) {
       Value_t v = D_RO(seg->l0_pairs)[i].value;
-      //printf("  found in l0 pos %u\n", i);
-#ifndef NO_LOCK
-      seg->unlock();
-#endif
+      printf("  found in l0 pos %u\n", i);
+      //seg->unlock();
       return v;
     }
   }
@@ -690,15 +701,13 @@ STARTOVER:
     //printf("  checking slot %lu with key %lu.\n", slot, key_);
     if (key_ == key) {
       Value_t v = dir->_[x]->get_value(slot);
-      //printf("  found in pmem pos %lu\n", slot);
-#ifndef NO_LOCK
-      seg->unlock();
-#endif
+      printf("  found in pmem pos %lu\n", slot);
+      //seg->unlock();
       return v;
     }
   }
-  //printf("  not found\n");
-  seg->unlock();
+  printf("  not found\n");
+  //seg->unlock();
   return NONE;
 }
 
@@ -709,14 +718,18 @@ void CCEH::compactor(CCEH *db) {
       if (db->dir->_[i]->imm_dpairs.load(std::memory_order_acquire) != nullptr) {
         /* imm_dpairs is not empty, minor compaction is needed */
         Segment *target = db->dir->_[i];
+        target->lock();
+        //fprintf(stderr, "Minor compact segment %lu.\n", i);
         int res = target->minor_compaction();
         if (res == 1) {/* need major compaction */
+          fprintf(stderr, "Major compact segment %lu.\n", i);
           res = target->major_compaction();
           if (res == 1) {/* major compaction failed, need to split the segment */
-            target->lock();
+            fprintf(stderr, "Splitting segment %lu....", i);
             target->sema = -1;
             Segment **s = target->Split(db->pop);
-            Key_t key = target->imm_dpairs.load(std::memory_order_acquire)[0].key;
+            fprintf(stderr, " generate two split segment, ");
+            Key_t key = D_RO(target->l0_pairs)[0].key;
             size_t key_hash = h(&key, sizeof(key));
             /* update directory */
             s[0]->pattern = (key_hash & ((size_t)pow(2, s[0]->local_depth-1)-1));
@@ -732,7 +745,7 @@ void CCEH::compactor(CCEH *db) {
               if (db->dir->_[x]->local_depth < db->global_depth) {  // normal split
                 db->dir->LSBUpdate(s[0]->local_depth, db->global_depth, db->dir->capacity, x, s);
               } else {  // directory doubling
-                fprintf(stderr, "Doubling to %lu.\n", db->global_depth);
+                fprintf(stderr, "Doubling to %lu.\n", db->global_depth+1);
                 fflush(stderr);
                 auto d = db->dir->_;
                 auto _dir = new Segment*[db->dir->capacity*2];
@@ -759,11 +772,14 @@ void CCEH::compactor(CCEH *db) {
             while (!db->dir->Release()) {
               asm("nop");
             }
-            target->unlock();
-            delete target;
+            //delete target;
+            fprintf(stderr, " successed\n", i);
           }
         }
+        target->cv_.notify_all();
+        target->unlock();
       }
     }
   }
+  fprintf(stderr, "Finish background compaction.\n");
 }
