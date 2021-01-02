@@ -10,7 +10,7 @@
 
 extern size_t perfCounter;
 
-#define NO_LOCK;
+//#define NO_LOCK;
 
 //unsigned long put_entry_num = 0;
 //unsigned long put_probe_time = 0;
@@ -150,23 +150,31 @@ int CCEH::Delete(Key_t& key) {
 }
 
 int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
-#ifndef NO_LOCK
   if (sema == -1) return 2;
-#endif
   if ((key_hash & (size_t)pow(2, local_depth)-1) != pattern) return 2;
   int ret = 0;
-#ifndef NO_LOCK
-  while (!lock()) { asm("nop"); }
-  if (sema == -1) return 2;
-#endif
+  //while (!lock()) { asm("nop"); }
+  lock();
+  //if (sema == -1) return 2;
   pair_insert_dram(key, value);
-  if (dpair_num == kBufferSlot) {
+  link_head = value;
+
+  if (dpair_num == kBufferSlot) { /* change to imm_dpairs */
+    while(imm_dpairs.load(std::memory_order_acquire) != nullptr) {asm("nop");}
+    imm_dpairs.store(dpairs, std::memory_order_release);
+    if (spared_dpairs == nullptr) {
+      fprintf(stderr, "The spared dpairs should not be empty!\n");
+      fflush(stderr);
+      exit(1);
+    }
+    dpairs = spared_dpairs;
+    spared_dpairs = nullptr;
+    dpair_num = 0;
     ret = 1;
-    sema = -1;
+    //ret = 1;
+    //sema = -1;
   }
-#ifndef NO_LOCK
   unlock();
-#endif
   return ret;
 }
 
@@ -217,7 +225,7 @@ Segment** Segment::Split(PMEMobjpool *pop) {
                 &(D_RO(split[1]->pairs)[0]),
                 kNumSlot*sizeof(Pair),
                 PMEMOBJ_F_MEM_NONTEMPORAL);
-  //printf("Split\n");
+  // split entries in the pmem part
   for (unsigned i = 0; i < kNumSlot; ++i) {
     if (pmem_pairs_buffer[i].key == INVALID) continue;
     auto key_hash = h(&(pmem_pairs_buffer[i].key), sizeof(Key_t));
@@ -254,7 +262,7 @@ Segment** Segment::Split(PMEMobjpool *pop) {
       exit(1);
     }
   }
-
+  // split entries in the l0 part
   for (unsigned i = 0; i < kL0Slot; ++i) {
     auto key_hash = h(&(l0_pair_buffer[i].key), sizeof(Key_t));
     auto loc = (key_hash >> (8*sizeof(key_hash)-kShift))*kNumPairPerCacheLine;
@@ -290,24 +298,51 @@ Segment** Segment::Split(PMEMobjpool *pop) {
       exit(1);
     }
   }
+  // split entries in the dram part
+  for (unsigned i = 0; i < dpair_num; ++i) {
+    auto key_hash = h(&(l0_pair_buffer[i].key), sizeof(Key_t));
+    auto loc = (key_hash >> (8*sizeof(key_hash)-kShift))*kNumPairPerCacheLine;
+    bool success = false;
+    if (!(key_hash & ((size_t) 1 << (local_depth)))) {
+      for (unsigned j = 0; j < kNumPairPerCacheLine * kNumCacheLine; ++j) {
+        auto slot = (loc+j)&kNumSlotMask;
+        if (pmem_pairs_buffer_s1[slot].key == INVALID || 
+              pmem_pairs_buffer_s1[slot].key == l0_pair_buffer[i].key) {
+          //printf("  move key %lu to s1 slot %lu\n", l0_pair_buffer[i].key, slot);
+          pmem_pairs_buffer_s1[slot].key = l0_pair_buffer[i].key;
+          pmem_pairs_buffer_s1[slot].value = l0_pair_buffer[i].value;
+          success = true;
+          break;
+        }
+      }
+    } else {
+      for (unsigned j = 0; j < kNumPairPerCacheLine * kNumCacheLine; ++j) {
+        auto slot = (loc+j)&kNumSlotMask;
+        if (pmem_pairs_buffer_s2[slot].key == INVALID || 
+              pmem_pairs_buffer_s2[slot].key == l0_pair_buffer[i].key) {
+          //printf("  move key %lu to s2 slot %lu\n", l0_pair_buffer[i].key, slot);
+          pmem_pairs_buffer_s2[slot].key = l0_pair_buffer[i].key;
+          pmem_pairs_buffer_s2[slot].value = l0_pair_buffer[i].value;
+          success = true;
+          break;
+        }
+      }
+    }
+    if (!success) {
+      fprintf(stderr, "Failed to split segment!\n");
+      fflush(stderr);
+      exit(1);
+    }
+  }
+
   pmemobj_memcpy_persist(pop,
                         &D_RW(split[0]->pairs)[0],
                         pmem_pairs_buffer_s1,
                         kNumSlot*sizeof(Pair));
-  // for (unsigned i = 0; i < kNumSlot; ++i) {
-  //   if (D_RO(split[0]->pairs)[i].key != pmem_pairs_buffer_s1[i].key) {
-  //     fprintf(stderr, "ERROR: failed to persist new segment.\n");
-  //   }
-  // }
   pmemobj_memcpy_persist(pop,
                         &D_RW(split[1]->pairs)[0],
                         pmem_pairs_buffer_s2,
                         kNumSlot*sizeof(Pair));
-  // for (unsigned i = 0; i < kNumSlot; ++i) {
-  //   if (D_RO(split[1]->pairs)[i].key != pmem_pairs_buffer_s2[i].key) {
-  //     fprintf(stderr, "ERROR: failed to persist new segment.\n");
-  //   }
-  // }
   clflush((char*)split[0], sizeof(Segment));
   clflush((char*)split[1], sizeof(Segment));
   free(l0_pair_buffer);
@@ -318,22 +353,25 @@ Segment** Segment::Split(PMEMobjpool *pop) {
 }
 
 int Segment::minor_compaction() {
+  /*
   if (dpair_num < kBufferSlot) {
     fprintf(stderr, "ERROR: Too early to triger minor compaction.\n");
   } else if (dpair_num > kBufferSlot) {
     fprintf(stderr, "ERROR: Buffer overflown.\n");
-  }
+  }*/
   if (l0_pair_num >= kL0Slot) {
     fprintf(stderr, "ERROR: L0 over flown.\n");
   }
   pmemobj_memcpy_persist(pool_handler, 
                         &(D_RW(l0_pairs)[l0_pair_num]),
-                        dpairs,
+                        imm_dpairs.load(std::memory_order_acquire),
                         kBufferSlot*sizeof(Pair));
   //pmem_persist(&(D_RW(l0_pairs)[l0_pair_num]), kBufferSlot*sizeof(Pair));
   l0_pair_num += kBufferSlot;
   D_RW(seg_pmem)->l0_pair_num = l0_pair_num;
-  dpair_num = 0;
+  //dpair_num = 0;
+  spared_dpairs = imm_dpairs.load(std::memory_order_acquire);
+  imm_dpairs.store(nullptr, std::memory_order_release);
   int ret = (l0_pair_num == kL0Slot ? 1 : 0);
   return ret;
 }
@@ -426,7 +464,9 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
   return;
 }
 
-void CCEH::Insert(Key_t& key, Value_t value) {
+void CCEH::Insert(Key_t& key, char *value) {
+  bool log_entry_inserted = false;
+  size_t log_entry_pos = INVALID;
 STARTOVER:
   auto key_hash = h(&key, sizeof(key));
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
@@ -434,12 +474,26 @@ STARTOVER:
 RETRY:
   auto x = (key_hash % dir->capacity);
   auto target = dir->_[x];
-  auto ret = target->Insert(key, value, y, key_hash);
+  if (!log_entry_inserted) {
+    size_t entry_size = 24+strlen(value)+1;
+    char *log_entry = (char *)malloc(entry_size);
+    *(Key_t *)log_entry = key;
+    *(size_t *)(log_entry+8) = target->link_head;
+    *(size_t *)(log_entry+16) = strlen(value)+1;
+    memcpy(log_entry+24, value, strlen(value)+1);
+    log_entry_pos = log->append(log_entry, entry_size);
+    log_entry_inserted = true;
+  }
+  //auto ret = target->Insert(key, value, y, key_hash);
+  auto ret = target->Insert(key, log_entry_pos, y, key_hash);
+  if (ret && !background_worker_working) {
+    background_worker_working = true;
+    background_worker = thread(compactor, this);
+  }
+  return;
 
   if (ret == 1) {
-#ifndef NO_LOCK
     while(!target->lock()) { asm("nop"); }
-#endif
     ret = target->minor_compaction();
     if (ret == 1) {
       ret = target->major_compaction();
@@ -495,10 +549,8 @@ RETRY:
         //fprintf(stderr, "Split successed\n");
       }
     }
-#ifndef NO_LOCK
     target->sema = 0;
     target->unlock();
-#endif
     return;
 
 
@@ -559,6 +611,7 @@ RETRY:
 CCEH::CCEH(const char* path)
 {
   if(init_pmem(path)){
+    shutting_down.store(false);
     constructor(0);
     std::cout << "initCap 1 depth 0" << std::endl;
     size_t capacity = dir->capacity;
@@ -573,6 +626,7 @@ CCEH::CCEH(const char* path)
 CCEH::CCEH(size_t initCap, const char* path)
 {
   if(init_pmem(path)){
+    shutting_down.store(false);
     constructor(log2(initCap));
     std::cout << "initCap " << initCap << " depth " << log2(initCap) << std::endl;
     size_t capacity = dir->capacity;
@@ -646,4 +700,70 @@ STARTOVER:
   //printf("  not found\n");
   seg->unlock();
   return NONE;
+}
+
+void CCEH::compactor(CCEH *db) {
+  fprintf(stderr, "Begin background compaction.\n");
+  while(!db->shutting_down.load(std::memory_order_acquire)) {
+    for (size_t i = 0; i < db->dir->capacity; ++i) {
+      if (db->dir->_[i]->imm_dpairs.load(std::memory_order_acquire) != nullptr) {
+        /* imm_dpairs is not empty, minor compaction is needed */
+        Segment *target = db->dir->_[i];
+        int res = target->minor_compaction();
+        if (res == 1) {/* need major compaction */
+          res = target->major_compaction();
+          if (res == 1) {/* major compaction failed, need to split the segment */
+            target->lock();
+            target->sema = -1;
+            Segment **s = target->Split(db->pop);
+            Key_t key = target->imm_dpairs.load(std::memory_order_acquire)[0].key;
+            size_t key_hash = h(&key, sizeof(key));
+            /* update directory */
+            s[0]->pattern = (key_hash & ((size_t)pow(2, s[0]->local_depth-1)-1));
+            s[1]->pattern = s[0]->pattern + (1 << (s[0]->local_depth-1));
+            s[0]->set_pattern_pmem(s[0]->pattern);
+            s[1]->set_pattern_pmem(s[1]->pattern);
+            // Directory management
+            while (!(db->dir->Acquire())) {
+              asm("nop");
+            }
+            { // CRITICAL SECTION - directory update
+              auto x = (key_hash & (db->dir->capacity-1));
+              if (db->dir->_[x]->local_depth < db->global_depth) {  // normal split
+                db->dir->LSBUpdate(s[0]->local_depth, db->global_depth, db->dir->capacity, x, s);
+              } else {  // directory doubling
+                fprintf(stderr, "Doubling to %lu.\n", db->global_depth);
+                fflush(stderr);
+                auto d = db->dir->_;
+                auto _dir = new Segment*[db->dir->capacity*2];
+                memcpy(_dir, d, sizeof(Segment*)*db->dir->capacity);
+                memcpy(_dir+db->dir->capacity, d, sizeof(Segment*)*db->dir->capacity);
+                _dir[x] = s[0];
+                _dir[x+db->dir->capacity] = s[1];
+                clflush((char*)&db->dir->_[0], sizeof(Segment*)*db->dir->capacity);
+                db->dir->_ = _dir;
+                clflush((char*)&db->dir->_, sizeof(void*));
+                db->dir->capacity *= 2;
+                clflush((char*)&db->dir->capacity, sizeof(size_t));
+                db->global_depth += 1;
+                clflush((char*)&db->global_depth, sizeof(global_depth));
+
+                db->dir->doubling_pmem();
+                db->dir->segment_bind_pmem(x, s[0]);
+                db->dir->segment_bind_pmem(x+db->dir->capacity/2, s[1]);
+                db->set_global_depth_pmem(db->global_depth);
+                delete d;
+                // TODO: requiered to do this atomically
+              }
+            }  // End of critical section
+            while (!db->dir->Release()) {
+              asm("nop");
+            }
+            target->unlock();
+            delete target;
+          }
+        }
+      }
+    }
+  }
 }

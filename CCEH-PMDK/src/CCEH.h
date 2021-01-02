@@ -6,13 +6,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <libpmemobj.h>
-#include <libpmem.h>
+//#include <libpmem.h>
 #include <unistd.h>
 #include <cmath>
 #include <vector>
 #include <mutex>
+#include <atomic>
+#include <thread>
 #include "../util/pair.h"
 #include "../src/hash.h"
+#include "./wal.h"
+//#include "../util/hash.h"
+//#include "../util/persist.h"
 //#include "../util/hash.h"
 
 #define LAYOUT "CCEH"
@@ -43,6 +48,7 @@ struct Segment_pmem{
   unsigned l0_pair_num;
   TOID(Pair) l0_pairs;
 	TOID(Pair) pairs;
+  size_t link_head;
 };
 
 struct Directory_pmem{
@@ -84,7 +90,9 @@ struct Segment {
   int minor_compaction();
   int major_compaction();
 
-  Pair dpairs[kBufferSlot];
+  Pair *dpairs;
+  Pair *spared_dpairs;
+  std::atomic<Pair *> imm_dpairs;
   unsigned dpair_num = 0;
   TOID(Pair) l0_pairs;
   unsigned l0_pair_num = 0;
@@ -92,17 +100,21 @@ struct Segment {
   int64_t sema = 0;
   size_t pattern = 0;
   PMEMobjpool *pool_handler;
+  size_t link_head = INVALID;
   //mutex m_;
   
   TOID(struct Segment_pmem) seg_pmem;
   TOID(Pair) pairs;
   bool locked = false;
+  mutex m_;
 
   //size_t numElem(void);
 
   Segment(PMEMobjpool *pop, size_t depth)
   :local_depth{depth}
   {
+    dpairs = (Pair *)malloc(kBufferSlot*sizeof(Pair));
+    spared_dpairs = (Pair *)malloc(kBufferSlot*sizeof(Pair));
     pool_handler = pop;
     POBJ_ALLOC(pop, &seg_pmem, struct Segment_pmem, sizeof(struct Segment_pmem),NULL, NULL);
     D_RW(seg_pmem)->local_depth = local_depth;
@@ -136,18 +148,24 @@ struct Segment {
     //kNumSlot = D_RO(seg_pmem)->pair_size;
 	}
 
-  ~Segment(void) { }
+  ~Segment(void) {
+    free(dpairs);
+    while(imm_dpairs.load(std::memory_order_acquire) != nullptr) {asm("nop");}
+    free(spared_dpairs);
+  }
 
   bool lock(void) {
-    bool status = false;
-    return CAS(&locked, &status, true);
-    //m_.lock();
+    //bool status = false;
+    //return CAS(&locked, &status, true);
+    m_.lock();
+    return true;
   }
 
   bool unlock(void) {
-    bool status = true;
-    return CAS(&locked, &status, false);
-    //m_.unlock();
+    //bool status = true;
+    //return CAS(&locked, &status, false);
+    m_.unlock();
+    return true;
   }
 
   void set_pattern_pmem(size_t pattern){
@@ -261,7 +279,7 @@ class CCEH {
     CCEH(const char*);
     CCEH(size_t, const char*);
     ~CCEH(void);
-    void Insert(Key_t&, Value_t);
+    void Insert(Key_t&, char *);
     Value_t Get(Key_t&);
     int Delete(Key_t&);
     /*
@@ -277,6 +295,10 @@ class CCEH {
     PMEMobjpool *pop;
     Directory* dir;
     size_t global_depth;
+    Wal *log;
+    std::atomic<bool> shutting_down;
+    std::thread background_worker;
+    bool background_worker_working = false;
     int init_pmem(const char* path){
       size_t pool_size = kPoolSize;//PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
       if(access(path, F_OK) != 0){
@@ -292,6 +314,10 @@ class CCEH {
         cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
         POBJ_ALLOC(pop, &dir_pmem, struct Directory_pmem, sizeof(struct Directory_pmem), NULL,NULL);
         D_RW(cceh_pmem)->directories = dir_pmem;
+        string log_path(path);
+        log_path += ".log";
+        log = new Wal();
+        log->create(log_path.c_str(), kPoolSize);
         return 1;
       }else{
         pop = pmemobj_open(path, LAYOUT);
@@ -304,6 +330,10 @@ class CCEH {
         dir_pmem = D_RO(cceh_pmem)->directories;
         dir = new Directory();
         dir->load_pmem(pop, dir_pmem);
+        string log_path(path);
+        log_path += ".log";
+        log = new Wal();
+        log->open(log_path.c_str());
         return 0;
       }
     }
@@ -319,7 +349,8 @@ class CCEH {
       void *ret;
       posix_memalign(&ret, 64, size);
       return ret;
-    } 
+    }
+    static void compactor(CCEH *db);
 };
 
 #endif  // EXTENDIBLE_PTR_H_

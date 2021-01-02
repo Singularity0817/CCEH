@@ -15,17 +15,18 @@
 #include "./ycsb_2.h"
 using namespace std;
 
-#define RESERVE_SPACE
+//#define RESERVE_SPACE
 //#define RECORD_WA
 //#define YCSB_TEST
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 500*1024*1024;
-const int ServerNum = 8;//8;
+const size_t InsertSize = 1000;//500*1024*1024;
+const int ServerNum = 1;//8;
 const int ReservePow = 21 - (int)log2(ServerNum);//22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
+char *value[2] = {"abcdefg", "hijklmn"};
 
 const size_t testTimes = 1;
 
@@ -101,7 +102,7 @@ void ServerThread(struct server_thread_param *p)
     for (unsigned t = 0; t < testTimes; t++) {
         for (unsigned i = 0; i < InsertSizePerServer; i++) {
             Key_t key = i*ServerNum+id;
-            db->Insert(key, ConstValue[i%2]);
+            db->Insert(key, value[i&1]);//ConstValue[i%2]);
             counter++;
             if ((counter & 0x3FFF) == 0) {
                 //__sync_fetch_and_add(&finishSize, counter);
