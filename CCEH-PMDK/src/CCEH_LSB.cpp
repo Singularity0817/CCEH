@@ -158,7 +158,7 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
   std::unique_lock<std::mutex> lck(m_);
   //if (sema == -1) return 2;
   pair_insert_dram(key, value);
-  link_head = value;
+  //link_head = value;
 
   if (dpair_num == kBufferSlot) { /* change to imm_dpairs */
     //while(imm_dpairs.load(std::memory_order_acquire) != nullptr) {asm("nop");}
@@ -446,17 +446,25 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
       _[x-dir_cap/2] = s[0];
       segment_bind_pmem(x-dir_cap/2, s[0]);
       clflush((char*)&_[x-dir_cap/2], sizeof(Segment*));
+      link_size[x-dir_cap/2] = 0;
+      link_head[x-dir_cap/2] = INVALID;
       _[x] = s[1];
       segment_bind_pmem(x, s[1]);
       clflush((char*)&_[x], sizeof(Segment*));
+      link_size[x] = 0;
+      link_head[x] = INVALID;
       //printf("lsb update : %d %d\n",x-dir_cap/2, x);
     } else {
       _[x] = s[0];
       segment_bind_pmem(x, s[0]);
       clflush((char*)&_[x], sizeof(Segment*));
+      link_size[x] = 0;
+      link_head[x] = INVALID;
       _[x+dir_cap/2] = s[1];
       segment_bind_pmem(x+dir_cap/2, s[1]);
       clflush((char*)&_[x+dir_cap/2], sizeof(Segment*));
+      link_size[x-dir_cap/2] = 0;
+      link_head[x-dir_cap/2] = INVALID;
       //printf("lsb update : %d %d\n",x, x+dir_cap/2);
     }
   } else {
@@ -485,7 +493,7 @@ RETRY:
     size_t entry_size = 24+strlen(value)+1;
     char *log_entry = (char *)malloc(entry_size);
     *(Key_t *)log_entry = key;
-    *(size_t *)(log_entry+8) = target->link_head;
+    *(size_t *)(log_entry+8) = dir->link_head[x];//target->link_head;
     *(size_t *)(log_entry+16) = strlen(value)+1;
     memcpy(log_entry+24, value, strlen(value)+1);
     log_entry_pos = log->append(log_entry, entry_size);
@@ -493,6 +501,13 @@ RETRY:
   }
   //auto ret = target->Insert(key, value, y, key_hash);
   auto ret = target->Insert(key, log_entry_pos, y, key_hash);
+  if (ret == 2) {
+    goto STARTOVER;
+  }
+  while (!dir->Acquire()) {asm("nop");}
+  ++dir->link_size[x];
+  dir->link_head[x] = log_entry_pos;
+  while (!dir->Release()) {asm("nop");}
   if (ret == 1 && !background_worker_working) {
     background_worker_working = true;
     background_worker = std::thread(compactor, this);
@@ -501,8 +516,6 @@ RETRY:
     std::lock_guard<mutex> lck(q_lock);
     segment_q.push(x);
     q_cv.notify_all();
-  } else if (ret == 2) {
-    goto STARTOVER;
   } else {
     asm("nop");
   }
@@ -642,6 +655,9 @@ void CCEH::compactor(CCEH *db) {
         target->lock();
         //fprintf(stderr, "Minor compact segment %lu.\n", i);
         int res = target->minor_compaction();
+        while(!db->dir->Acquire()) {asm("nop");}
+        db->dir->link_size[x] -= Segment::kBufferSlot;
+        while(!db->dir->Release()) {asm("nop");}
         if (res == 1) {/* need major compaction */
           //fprintf(stderr, " Major compact segment %lu.\n", i);
           res = target->major_compaction();
@@ -677,6 +693,20 @@ void CCEH::compactor(CCEH *db) {
                 clflush((char*)&db->dir->_[0], sizeof(Segment*)*db->dir->capacity);
                 db->dir->_ = _dir;
                 clflush((char*)&db->dir->_, sizeof(void*));
+                /* extend the link head and link size array */
+                auto _new_link_head = new size_t[db->dir->capacity*2];
+                auto _new_link_size = new unsigned[db->dir->capacity*2];
+                memcpy(_new_link_head, db->dir->link_head, sizeof(size_t)*db->dir->capacity);
+                memcpy(_new_link_head+db->dir->capacity, db->dir->link_head, sizeof(size_t)*db->dir->capacity);
+                memcpy(_new_link_size, db->dir->link_size, sizeof(unsigned)*db->dir->capacity);
+                memcpy(_new_link_size+db->dir->capacity, db->dir->link_size, sizeof(unsigned)*db->dir->capacity);
+                auto _old_link_head = db->dir->link_head;
+                auto _old_link_size = db->dir->link_size;
+                db->dir->link_size = _new_link_size;
+                clflush((char*)&db->dir->link_size, sizeof(void *));
+                db->dir->link_head = _new_link_head;
+                clflush((char*)&db->dir->link_head, sizeof(void *));
+
                 db->dir->capacity *= 2;
                 clflush((char*)&db->dir->capacity, sizeof(size_t));
                 db->global_depth += 1;
@@ -684,9 +714,17 @@ void CCEH::compactor(CCEH *db) {
 
                 db->dir->doubling_pmem();
                 db->dir->segment_bind_pmem(x, s[0]);
+                db->dir->link_size[x] = 0;
+                db->dir->link_head[x] = INVALID;
                 db->dir->segment_bind_pmem(x+db->dir->capacity/2, s[1]);
+                db->dir->link_size[x+db->dir->capacity/2] = 0;
+                db->dir->link_head[x+db->dir->capacity/2] = INVALID;
                 db->set_global_depth_pmem(db->global_depth);
+                size_t checkpoint = db->log->get_current_writepoint();
+                db->dir->do_checkpoint(checkpoint);
                 delete d;
+                delete _old_link_head;
+                delete _old_link_size;
                 //fprintf(stderr, "   finish doubling %lu.\n", db->global_depth);
                 //fflush(stderr);
                 // TODO: requiered to do this atomically
@@ -701,6 +739,12 @@ void CCEH::compactor(CCEH *db) {
         }
         target->cv_.notify_all();
         target->unlock();
+      }
+      if ((db->log->get_current_writepoint() - db->dir->last_checkpoint) >= (size_t)128*1024*1024){
+        while(!db->dir->Acquire()) {asm("nop");}
+        size_t checkpoint = db->log->get_current_writepoint();
+        db->dir->do_checkpoint(checkpoint);
+        while(!db->dir->Release()) {asm("nop");}
       }
     }
   }

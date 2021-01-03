@@ -40,6 +40,8 @@ POBJ_LAYOUT_TOID(CCEH_LAYOUT, struct Directory_pmem);
 POBJ_LAYOUT_TOID(CCEH_LAYOUT, struct Segment_pmem);
 POBJ_LAYOUT_TOID(CCEH_LAYOUT, TOID(struct Segment_pmem));
 POBJ_LAYOUT_TOID(CCEH_LAYOUT, Pair);
+POBJ_LAYOUT_TOID(CCEH_LAYOUT, size_t);
+POBJ_LAYOUT_TOID(CCEH_LAYOUT, unsigned);
 POBJ_LAYOUT_END(CCEH_LAYOUT);
 
 struct Segment_pmem{
@@ -50,7 +52,7 @@ struct Segment_pmem{
   unsigned l0_pair_num;
   TOID(Pair) l0_pairs;
 	TOID(Pair) pairs;
-  size_t link_head;
+  //size_t link_head;
 };
 
 struct Directory_pmem{
@@ -58,6 +60,9 @@ struct Directory_pmem{
 	size_t depth;
 	bool lock;
 	int sema = 0;
+  size_t checkpoint;
+  TOID(size_t) link_head_pmem;
+  TOID(unsigned) link_size_pmem;
 	TOID_ARRAY(TOID(struct Segment_pmem)) segments;
 };
 
@@ -201,10 +206,12 @@ public:
   static const size_t kDefaultDepth = 10;
   Segment** _;
   size_t *link_head;
+  unsigned *link_size;
   size_t capacity;
   size_t depth;
   int sema = 0 ;
   bool lock;
+  size_t last_checkpoint = 0;
   PMEMobjpool *pop;
   TOID(struct Directory_pmem) dir_pmem;
   TOID_ARRAY(TOID(struct Segment_pmem)) segments;
@@ -218,6 +225,8 @@ public:
     pop=pop_;
     _ = new Segment*[capacity];
     link_head = new size_t[capacity];
+    link_size = new unsigned[capacity];
+    for (unsigned i = 0; i < capacity; ++i) link_head[i]=INVALID;
     D_RW(dir_pmem)->depth = depth;
     D_RW(dir_pmem)->capacity = capacity;
     D_RW(dir_pmem)->lock = lock;
@@ -225,6 +234,10 @@ public:
 
     POBJ_ALLOC(pop, &segments, TOID(struct Segment_pmem), sizeof(TOID(struct Segment_pmem))*capacity, NULL,NULL);  
     D_RW(dir_pmem)->segments = segments;
+    POBJ_ALLOC(pop, &(D_RW(dir_pmem)->link_head_pmem), size_t, sizeof(size_t)*capacity, NULL, NULL);
+    POBJ_ALLOC(pop, &(D_RW(dir_pmem)->link_size_pmem), unsigned, sizeof(unsigned)*capacity, NULL, NULL);
+    D_RW(dir_pmem)->checkpoint = 0;
+    //D_RW(dir_pmem)->link_head_pmem
   }
   Directory(){ }
   ~Directory(void){ }
@@ -236,9 +249,32 @@ public:
     for(size_t i=capacity/2; i<capacity; i++){
 	    D_RW(D_RW(dir_pmem)->segments)[i] = D_RO(D_RO(dir_pmem)->segments)[i-capacity/2];
     }
+    /* reallocate pmem space for link_head and link_size */
+    POBJ_REALLOC(pop, &D_RW(dir_pmem)->link_head_pmem, size_t, sizeof(size_t)*capacity);
+    pmemobj_memcpy_persist(pop, D_RW(D_RW(dir_pmem)->link_head_pmem)+capacity/2, D_RW(D_RW(dir_pmem)->link_head_pmem), sizeof(size_t)*capacity/2);
+    POBJ_REALLOC(pop, &D_RW(dir_pmem)->link_size_pmem, unsigned, sizeof(unsigned)*capacity);
+    pmemobj_memcpy_persist(pop, D_RW(D_RW(dir_pmem)->link_size_pmem)+capacity/2, D_RW(D_RW(dir_pmem)->link_size_pmem), sizeof(unsigned)*capacity/2);
   } 
   void segment_bind_pmem(size_t dir_index, struct Segment* s){
     D_RW(D_RW(dir_pmem)->segments)[dir_index] = s->seg_pmem;
+  }
+  void do_checkpoint(size_t checkpoint) {
+    pmemobj_memcpy_persist(pop, D_RW(D_RW(dir_pmem)->link_size_pmem), link_size, sizeof(unsigned)*capacity);
+    pmemobj_memcpy_persist(pop, D_RW(D_RW(dir_pmem)->link_head_pmem), link_head, sizeof(size_t)*capacity);
+    D_RW(dir_pmem)->checkpoint = checkpoint;
+    pmemobj_persist(pop, &D_RW(dir_pmem)->checkpoint, sizeof(size_t));
+    /*
+    printf("====== new checkpoing %lu : last checkpoint %lu =====\n", checkpoint, last_checkpoint);
+    for (unsigned i = 0; i < capacity; ++i) {
+      printf("%8lu ", D_RO(D_RO(dir_pmem)->link_head_pmem)[i]);
+    }
+    printf("\n");
+    for (unsigned i = 0; i < capacity; ++i) {
+      printf("%8u ", D_RO(D_RO(dir_pmem)->link_size_pmem)[i]);
+    }
+    printf("\n");
+    */
+    last_checkpoint = checkpoint;
   }
   void load_pmem(PMEMobjpool* pop_, TOID(struct Directory_pmem) dir_pmem_){
     pop = pop_;
