@@ -200,6 +200,7 @@ struct Directory {
 public:
   static const size_t kDefaultDepth = 10;
   Segment** _;
+  size_t *link_head;
   size_t capacity;
   size_t depth;
   int sema = 0 ;

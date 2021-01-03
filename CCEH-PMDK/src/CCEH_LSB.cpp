@@ -654,7 +654,8 @@ CCEH::~CCEH(void)
 {
   //shutting_down.store(true, std::memory_order_release);
   //background_worker.join();
-  stop_compaction();
+  if (!shutting_down.load(std::memory_order_acquire))
+    stop_compaction();
   std::cout << "SizeofDirectly: " << sizeof(struct Directory) << ", SizeofSegments: " << dir->segment_size() << std::endl
             << "SegmentNum: " << dir->segment_num() << ", SingleSegmentSize: " << sizeof(struct Segment) << std::endl;
   //std::cout << "Total entries put: " << put_entry_num << ", probe time per entry: " << put_probe_time/(double)put_entry_num << std::endl;
@@ -737,7 +738,8 @@ void CCEH::compactor(CCEH *db) {
   while(!db->shutting_down.load(std::memory_order_acquire)) {
     //for (size_t i = 0; i < db->dir->capacity; ++i) {
     std::unique_lock<mutex> lck(db->q_lock);
-    db->q_cv.wait(lck, [db]{return !(db->segment_q.empty());});
+    db->q_cv.wait(lck, [db]{return (!db->segment_q.empty() || db->shutting_down.load(std::memory_order_acquire));});
+    if (db->shutting_down.load(std::memory_order_acquire)) break;
     lck.unlock();
     while (!db->segment_q.empty()) {
       lck.lock();
