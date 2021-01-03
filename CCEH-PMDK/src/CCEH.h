@@ -217,6 +217,7 @@ public:
     lock = false;
     pop=pop_;
     _ = new Segment*[capacity];
+    link_head = new size_t[capacity];
     D_RW(dir_pmem)->depth = depth;
     D_RW(dir_pmem)->capacity = capacity;
     D_RW(dir_pmem)->lock = lock;

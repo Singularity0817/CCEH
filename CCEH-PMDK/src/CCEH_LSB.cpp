@@ -493,130 +493,20 @@ RETRY:
   }
   //auto ret = target->Insert(key, value, y, key_hash);
   auto ret = target->Insert(key, log_entry_pos, y, key_hash);
-  if (ret && !background_worker_working) {
+  if (ret == 1 && !background_worker_working) {
     background_worker_working = true;
     background_worker = std::thread(compactor, this);
   }
-  if (ret) {
+  if (ret == 1) {
     std::lock_guard<mutex> lck(q_lock);
     segment_q.push(x);
     q_cv.notify_all();
-  }
-  return;
-
-  if (ret == 1) {
-    while(!target->lock()) { asm("nop"); }
-    ret = target->minor_compaction();
-    if (ret == 1) {
-      ret = target->major_compaction();
-      if (ret == 1) {
-        // TODO: should do split when major compaction failed
-        //fprintf(stderr, "Major compaction failed.\n");
-        //exit(1);
-        //fprintf(stderr, "Spliting...\n");
-        Segment **s = target->Split(pop);
-        
-        /* update directory */
-        s[0]->pattern = (key_hash % (size_t)pow(2, s[0]->local_depth-1));
-        s[1]->pattern = s[0]->pattern + (1 << (s[0]->local_depth-1));
-        s[0]->set_pattern_pmem(s[0]->pattern);
-        s[1]->set_pattern_pmem(s[1]->pattern);
-        // Directory management
-        while (!dir->Acquire()) {
-          asm("nop");
-        }
-        { // CRITICAL SECTION - directory update
-          x = (key_hash % dir->capacity);
-          if (dir->_[x]->local_depth < global_depth) {  // normal split
-            dir->LSBUpdate(s[0]->local_depth, global_depth, dir->capacity, x, s);
-          } else {  // directory doubling
-            fprintf(stderr, "Doubling to %lu.\n", global_depth);
-            fflush(stderr);
-            auto d = dir->_;
-            auto _dir = new Segment*[dir->capacity*2];
-            memcpy(_dir, d, sizeof(Segment*)*dir->capacity);
-            memcpy(_dir+dir->capacity, d, sizeof(Segment*)*dir->capacity);
-            _dir[x] = s[0];
-            _dir[x+dir->capacity] = s[1];
-            clflush((char*)&dir->_[0], sizeof(Segment*)*dir->capacity);
-            dir->_ = _dir;
-            clflush((char*)&dir->_, sizeof(void*));
-            dir->capacity *= 2;
-            clflush((char*)&dir->capacity, sizeof(size_t));
-            global_depth += 1;
-            clflush((char*)&global_depth, sizeof(global_depth));
-
-            dir->doubling_pmem();
-            dir->segment_bind_pmem(x, s[0]);
-            dir->segment_bind_pmem(x+dir->capacity/2, s[1]);
-            set_global_depth_pmem(global_depth);
-            delete d;
-            // TODO: requiered to do this atomically
-          }
-        }  // End of critical section
-        while (!dir->Release()) {
-          asm("nop");
-        }
-        /* end of update directory */
-        //fprintf(stderr, "Split successed\n");
-      }
-    }
-    target->sema = 0;
-    target->unlock();
-    return;
-
-
-    // Segment** s = target->Split(pop);
-    // if (s == nullptr) {
-    //   goto RETRY;
-    // }
-
-    // s[0]->pattern = (key_hash % (size_t)pow(2, s[0]->local_depth-1));
-    // s[1]->pattern = s[0]->pattern + (1 << (s[0]->local_depth-1));
-    // s[0]->set_pattern_pmem(s[0]->pattern);
-    // s[1]->set_pattern_pmem(s[1]->pattern);
-    // // Directory management
-    // while (!dir->Acquire()) {
-    //   asm("nop");
-    // }
-    // { // CRITICAL SECTION - directory update
-    //   x = (key_hash % dir->capacity);
-    //   if (dir->_[x]->local_depth < global_depth) {  // normal split
-    //     dir->LSBUpdate(s[0]->local_depth, global_depth, dir->capacity, x, s);
-    //   } else {  // directory doubling
-    //     auto d = dir->_;
-    //     auto _dir = new Segment*[dir->capacity*2];
-    //     memcpy(_dir, d, sizeof(Segment*)*dir->capacity);
-    //     memcpy(_dir+dir->capacity, d, sizeof(Segment*)*dir->capacity);
-    //     _dir[x] = s[0];
-    //     _dir[x+dir->capacity] = s[1];
-    //     clflush((char*)&dir->_[0], sizeof(Segment*)*dir->capacity);
-    //     dir->_ = _dir;
-    //     clflush((char*)&dir->_, sizeof(void*));
-    //     dir->capacity *= 2;
-    //     clflush((char*)&dir->capacity, sizeof(size_t));
-    //     global_depth += 1;
-    //     clflush((char*)&global_depth, sizeof(global_depth));
-
-    //     dir->doubling_pmem();
-    //     dir->segment_bind_pmem(x, s[0]);
-    //     dir->segment_bind_pmem(x+dir->capacity/2, s[1]);
-    //     set_global_depth_pmem(global_depth);
-    //     delete d;
-    //     // TODO: requiered to do this atomically
-    //   }
-    // }  // End of critical section
-    // while (!dir->Release()) {
-    //   asm("nop");
-    // }
-    // goto RETRY;
   } else if (ret == 2) {
-    // Insert(key, value);
     goto STARTOVER;
   } else {
     asm("nop");
-    //clflush((char*)&dir->_[x]->_[y], 64);
   }
+  return;
 }
 
 
