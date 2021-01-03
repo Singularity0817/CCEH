@@ -15,7 +15,7 @@
 #include "./ycsb_2.h"
 using namespace std;
 
-//#define RESERVE_SPACE
+#define RESERVE_SPACE
 //#define RECORD_WA
 //#define YCSB_TEST
 
@@ -102,7 +102,7 @@ void ServerThread(struct server_thread_param *p)
     for (unsigned t = 0; t < testTimes; t++) {
         for (unsigned i = 0; i < InsertSizePerServer; i++) {
             Key_t key = i*ServerNum+id;
-            db->Insert(key, value[i&1]);//ConstValue[i%2]);
+            db->Insert(key, value[key&0x1]);//ConstValue[i%2]);
             counter++;
             if ((counter & 0x3FFF) == 0) {
                 //__sync_fetch_and_add(&finishSize, counter);
@@ -215,7 +215,8 @@ int main(int argc, char* argv[]){
 	        elapsed += r_span;
 	        if (r_span > r_max) r_max = r_span;
 	        if (r_span < r_min) r_min = r_span;
-            if (ret == NONE) fail_get++;
+            //if (ret == NONE) fail_get++;
+            if (ret == nullptr) fail_get++;
             if (r_span > 10000) {
                 rtime[999]++;
             } else {
@@ -326,6 +327,7 @@ int main(int argc, char* argv[]){
         Key_t t_key;
         size_t fail_get = 0;
         size_t success_get = 0;
+        size_t wrong_get = 0;
         uint64_t rtime[1000];
         for (int i = 0; i < 1000; i++) rtime[i] = 0;
         //util::IPMWatcher watcher("cceh_get");
@@ -340,11 +342,16 @@ int main(int argc, char* argv[]){
 	        elapsed += r_span;
 	        if (r_span > r_max) r_max = r_span;
 	        if (r_span < r_min) r_min = r_span;
-            if (ret == NONE) {
+            if (ret == nullptr/*NONE*/) {
                 fail_get++;
                 //break;
             } else {
-                success_get++;
+                if (strcmp(ret, value[t_key&0x1]) != 0) {
+                    wrong_get++;
+                    //printf("key %lu, wrong value %s : %s\n", ret, value[t_key&1]);
+                } else {
+                    success_get++;
+                }
             }
             if (r_span > 10000) {
                 rtime[999]++;
@@ -358,7 +365,8 @@ int main(int argc, char* argv[]){
         }
         fprintf(stderr, "\n");
         //debug_perf_stop();
-        std::cout << "Get Entries: " << success_get << ", fail get" << fail_get << ", size " 
+        std::cout << "Get Entries: " << success_get << ", fail get" << fail_get << ", wrong get "
+            << wrong_get << ", size " 
             << ((double)(entries_to_get*sizeof(size_t)*2))/1024/1024 << "MB, time: " << elapsed 
             << "ns, avg_time " << ((double)elapsed)/entries_to_get << "ns, ops: " 
             << entries_to_get/(((double)elapsed)/1000000000)/1024/1024 << "Mops, min " << r_min 

@@ -473,7 +473,7 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
 
 void CCEH::Insert(Key_t& key, char *value) {
   bool log_entry_inserted = false;
-  size_t log_entry_pos = reinterpret_cast<Value_t>(value);//INVALID;
+  size_t log_entry_pos = INVALID;//reinterpret_cast<Value_t>(value);//INVALID;
 STARTOVER:
   auto key_hash = h(&key, sizeof(key));
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
@@ -481,16 +481,16 @@ STARTOVER:
 RETRY:
   auto x = (key_hash % dir->capacity);
   auto target = dir->_[x];
-  // if (!log_entry_inserted) {
-  //   size_t entry_size = 24+strlen(value)+1;
-  //   char *log_entry = (char *)malloc(entry_size);
-  //   *(Key_t *)log_entry = key;
-  //   *(size_t *)(log_entry+8) = target->link_head;
-  //   *(size_t *)(log_entry+16) = strlen(value)+1;
-  //   memcpy(log_entry+24, value, strlen(value)+1);
-  //   log_entry_pos = log->append(log_entry, entry_size);
-  //   log_entry_inserted = true;
-  // }
+  if (!log_entry_inserted) {
+    size_t entry_size = 24+strlen(value)+1;
+    char *log_entry = (char *)malloc(entry_size);
+    *(Key_t *)log_entry = key;
+    *(size_t *)(log_entry+8) = target->link_head;
+    *(size_t *)(log_entry+16) = strlen(value)+1;
+    memcpy(log_entry+24, value, strlen(value)+1);
+    log_entry_pos = log->append(log_entry, entry_size);
+    log_entry_inserted = true;
+  }
   //auto ret = target->Insert(key, value, y, key_hash);
   auto ret = target->Insert(key, log_entry_pos, y, key_hash);
   if (ret && !background_worker_working) {
@@ -655,7 +655,8 @@ CCEH::~CCEH(void)
   //std::cout << "Total entries get: " << get_entry_num << ", probe time per entry: " << get_probe_time/(double)get_entry_num << std::endl;
 }
 
-Value_t CCEH::Get(Key_t& key) {
+//Value_t CCEH::Get(Key_t& key) {
+char *CCEH::Get(Key_t& key) {
   //printf("key %5lu", key);
 STARTOVER:
   auto key_hash = h(&key, sizeof(key));
@@ -667,6 +668,7 @@ STARTOVER:
   //printf("getting key %lu from segment %lu.\n", key, x);
   if (seg->sema == -1) goto STARTOVER;
   //while (!seg->lock()) { asm("nop"); }
+  {/* critical section */
   std::lock_guard<std::mutex> lck(seg->m_);
   if (seg->sema == -1) goto STARTOVER;
   for (unsigned i = 0; i < seg->dpair_num; ++i) {
@@ -674,7 +676,9 @@ STARTOVER:
       Value_t v = seg->dpairs[i].value;
       //printf("  found in dram pos %u\n", i);
       //seg->unlock();
-      return v;
+      char *res = log->get_entry(v)+24;
+      return res;
+      //return v;
     }
   }
   if (seg->imm_dpairs.load(std::memory_order_acquire) != nullptr) {
@@ -683,7 +687,9 @@ STARTOVER:
         Value_t v = seg->imm_dpairs[i].value;
         //printf("  found in imm dram pos %u\n", i);
         //seg->unlock();
-        return v;
+        char *res = log->get_entry(v)+24;
+        return res;
+        //return v;
       }
     }
   }
@@ -692,7 +698,9 @@ STARTOVER:
       Value_t v = D_RO(seg->l0_pairs)[i].value;
       //printf("  found in l0 pos %u\n", i);
       //seg->unlock();
-      return v;
+      char *res = log->get_entry(v)+24;
+      return res;
+      //return v;
     }
   }
   //get_entry_num++;
@@ -706,12 +714,16 @@ STARTOVER:
       Value_t v = dir->_[x]->get_value(slot);
       //printf("  found in pmem pos %lu\n", slot);
       //seg->unlock();
-      return v;
+      char *res = log->get_entry(v)+24;
+      return res;
+      //return v;
     }
   }
+  }/* end of critical section */
   //printf("  not found\n");
   //seg->unlock();
-  return NONE;
+  //return NONE;
+  return nullptr;
 }
 
 void CCEH::compactor(CCEH *db) {

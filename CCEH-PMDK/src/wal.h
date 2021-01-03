@@ -1,3 +1,6 @@
+#ifndef WAL_C
+#define WAL_C
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
@@ -8,9 +11,6 @@
 #include <atomic>
 #include <mutex>
 using namespace std;
-
-#ifndef WAL_C
-#define WAL_C
 
 #define LOG_POOL_SIZE ((u_int64_t)32 << 30)
 #define WAL_HEADER_SIZE 512
