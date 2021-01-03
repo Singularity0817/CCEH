@@ -315,6 +315,9 @@ int main(int argc, char* argv[]){
             << InsertSize/(((double)elapsed)/1000000000)/1024/1024 << "Mops." << std::endl;
         //zExecute(mem_command);
         }
+        for (int i = 0; i < ServerNum; ++i) {
+            HashTables[i]->stop_compaction();
+        }
         std::cout << "Begin to get..." << std::endl;
         {
 	    fflush(stdout);

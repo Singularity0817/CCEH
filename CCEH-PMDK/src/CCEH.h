@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <atomic>
 #include <thread>
+#include <queue>
 #include "../util/pair.h"
 #include "../src/hash.h"
 #include "./wal.h"
@@ -303,6 +304,9 @@ class CCEH {
     std::atomic<bool> shutting_down;
     std::thread background_worker;
     bool background_worker_working = false;
+    std::queue<size_t> segment_q;
+    std::mutex q_lock;
+    std::condition_variable q_cv;
     int init_pmem(const char* path){
       size_t pool_size = kPoolSize;//PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
       if(access(path, F_OK) != 0){
@@ -355,6 +359,11 @@ class CCEH {
       return ret;
     }
     static void compactor(CCEH *db);
+    void stop_compaction() {
+      shutting_down.store(true, std::memory_order_release);
+      q_cv.notify_all();
+      background_worker.join();
+    }
 };
 
 #endif  // EXTENDIBLE_PTR_H_

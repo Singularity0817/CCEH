@@ -497,6 +497,11 @@ RETRY:
     background_worker_working = true;
     background_worker = std::thread(compactor, this);
   }
+  if (ret) {
+    std::lock_guard<mutex> lck(q_lock);
+    segment_q.push(x);
+    q_cv.notify_all();
+  }
   return;
 
   if (ret == 1) {
@@ -647,8 +652,9 @@ CCEH::CCEH(size_t initCap, const char* path)
 
 CCEH::~CCEH(void)
 {
-  shutting_down.store(true, std::memory_order_release);
-  background_worker.join();
+  //shutting_down.store(true, std::memory_order_release);
+  //background_worker.join();
+  stop_compaction();
   std::cout << "SizeofDirectly: " << sizeof(struct Directory) << ", SizeofSegments: " << dir->segment_size() << std::endl
             << "SegmentNum: " << dir->segment_num() << ", SingleSegmentSize: " << sizeof(struct Segment) << std::endl;
   //std::cout << "Total entries put: " << put_entry_num << ", probe time per entry: " << put_probe_time/(double)put_entry_num << std::endl;
@@ -729,10 +735,18 @@ STARTOVER:
 void CCEH::compactor(CCEH *db) {
   fprintf(stderr, "Begin background compaction.\n");
   while(!db->shutting_down.load(std::memory_order_acquire)) {
-    for (size_t i = 0; i < db->dir->capacity; ++i) {
-      if (db->dir->_[i]->imm_dpairs.load(std::memory_order_acquire) != nullptr) {
+    //for (size_t i = 0; i < db->dir->capacity; ++i) {
+    std::unique_lock<mutex> lck(db->q_lock);
+    db->q_cv.wait(lck, [db]{return !(db->segment_q.empty());});
+    lck.unlock();
+    while (!db->segment_q.empty()) {
+      lck.lock();
+      auto x = db->segment_q.front();
+      db->segment_q.pop();
+      lck.unlock();
+      if (db->dir->_[x]->imm_dpairs.load(std::memory_order_acquire) != nullptr) {
         /* imm_dpairs is not empty, minor compaction is needed */
-        Segment *target = db->dir->_[i];
+        Segment *target = db->dir->_[x];
         target->lock();
         //fprintf(stderr, "Minor compact segment %lu.\n", i);
         int res = target->minor_compaction();
