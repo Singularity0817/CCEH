@@ -559,8 +559,20 @@ CCEH::~CCEH(void)
   //background_worker.join();
   if (!shutting_down.load(std::memory_order_acquire))
     stop_compaction();
+  log->flush();
   std::cout << "SizeofDirectly: " << sizeof(struct Directory) << ", SizeofSegments: " << dir->segment_size() << std::endl
             << "SegmentNum: " << dir->segment_num() << ", SingleSegmentSize: " << sizeof(struct Segment) << std::endl;
+  /*
+  std::cout << "******Checkpoint " << dir->last_checkpoint << "*****" << std::endl;
+  for (unsigned i = 0; i < dir->capacity; ++i) {
+    printf("%5lu ", dir->link_head[i]);
+  }
+  printf("\n");
+  for (unsigned i = 0; i < dir->capacity; ++i) {
+    printf("%5u ", dir->link_size[i]);
+  }
+  printf("\n");
+  */
   //std::cout << "Total entries put: " << put_entry_num << ", probe time per entry: " << put_probe_time/(double)put_entry_num << std::endl;
   //std::cout << "Total entries get: " << get_entry_num << ", probe time per entry: " << get_probe_time/(double)get_entry_num << std::endl;
 }
@@ -581,14 +593,30 @@ STARTOVER:
   {/* critical section */
   std::lock_guard<std::mutex> lck(seg->m_);
   if (seg->sema == -1) goto STARTOVER;
-  for (unsigned i = 0; i < seg->dpair_num; ++i) {
-    if (seg->dpairs[i].key == key) {
-      Value_t v = seg->dpairs[i].value;
-      //printf("  found in dram pos %u\n", i);
-      //seg->unlock();
-      char *res = log->get_entry(v)+24;
-      return res;
-      //return v;
+  if (degraded_read) {
+    size_t pos = dir->link_head[x];
+    for (unsigned i = 0; i < dir->link_size[x]; ++i) {
+      if (pos == INVALID) break;
+      char *entry = log->get_entry(pos);
+      Key_t k = *(Key_t *)(entry);
+      if (k == key) {
+        char *res = (entry+24);
+        //printf("key %lu got in link list.\n", key);
+        return res;
+      } else {
+        pos = *(size_t *)(entry+8);
+      }
+    }
+  } else {
+    for (unsigned i = 0; i < seg->dpair_num; ++i) {
+      if (seg->dpairs[i].key == key) {
+        Value_t v = seg->dpairs[i].value;
+        //printf("  found in dram pos %u\n", i);
+        //seg->unlock();
+        char *res = log->get_entry(v)+24;
+        return res;
+        //return v;
+      }
     }
   }
   if (seg->imm_dpairs.load(std::memory_order_acquire) != nullptr) {
@@ -634,6 +662,47 @@ STARTOVER:
   //seg->unlock();
   //return NONE;
   return nullptr;
+}
+
+void CCEH::recover() {
+  degraded_read = true;
+  size_t log_write_point = log->get_current_writepoint();
+  size_t current = dir->last_checkpoint;
+  /*
+  printf("before recover\n");
+  for (unsigned i = 0; i < dir->capacity; ++i) {
+    printf("%5lu ", dir->link_head[i]);
+  }
+  printf("\n");
+  for (unsigned i = 0; i < dir->capacity; ++i) {
+    printf("%5u ", dir->link_size[i]);
+  }
+  printf("\n");
+  */
+  printf("recovering from checkpoint %lu...\n", dir->last_checkpoint);
+  unsigned items = 0;
+  while(current < log_write_point) {
+    ++items;
+    char *entry = log->get_entry(current);
+    Key_t key = *(Key_t *)entry;
+    auto key_hash = h(&key, sizeof(key));
+    const size_t mask = dir->capacity-1;
+    auto x = (key_hash & mask);
+    dir->link_head[x] = current;
+    ++dir->link_size[x];
+    current += (24+(*(size_t *)(entry+16)));
+  }
+  printf("recovered %u items.\n", items);
+  /*
+  for (unsigned i = 0; i < dir->capacity; ++i) {
+    printf("%5lu ", dir->link_head[i]);
+  }
+  printf("\n");
+  for (unsigned i = 0; i < dir->capacity; ++i) {
+    printf("%5u ", dir->link_size[i]);
+  }
+  printf("\n");
+  */
 }
 
 void CCEH::compactor(CCEH *db) {
@@ -740,7 +809,7 @@ void CCEH::compactor(CCEH *db) {
         target->cv_.notify_all();
         target->unlock();
       }
-      if ((db->log->get_current_writepoint() - db->dir->last_checkpoint) >= (size_t)128*1024*1024){
+      if ((db->log->get_current_writepoint() - db->dir->last_checkpoint) >= kCheckpointInterval){
         while(!db->dir->Acquire()) {asm("nop");}
         size_t checkpoint = db->log->get_current_writepoint();
         db->dir->do_checkpoint(checkpoint);

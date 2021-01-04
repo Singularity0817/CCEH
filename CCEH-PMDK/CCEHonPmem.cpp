@@ -15,14 +15,14 @@
 #include "./ycsb_2.h"
 using namespace std;
 
-#define RESERVE_SPACE
+//#define RESERVE_SPACE
 //#define RECORD_WA
 //#define YCSB_TEST
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 500*1024*1024;
-const int ServerNum = 8;//8;
+const size_t InsertSize = 2000;//500*1024*1024;
+const int ServerNum = 1;//8;
 const int ReservePow = 21 - (int)log2(ServerNum);//22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
@@ -197,17 +197,18 @@ int main(int argc, char* argv[]){
         {
 	    fflush(stdout);
         default_random_engine re(time(0));
-        //uniform_int_distribution<Key_t> u(0, InsertSize-1);
-        uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
+        uniform_int_distribution<Key_t> u(0, InsertSize-1);
+        //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = 100*1024*1024;
+        unsigned entries_to_get = InsertSize;//100*1024*1024;
         Key_t t_key;
         //util::IPMWatcher watcher("cceh_get");
         //debug_perf_switch();
         size_t fail_get = 0;
         for(unsigned i = 0; i < entries_to_get; i++){
-            t_key = u(re);
+            //t_key = u(re);
+            t_key = i;
             clock_gettime(CLOCK_REALTIME, &time_start);
             auto ret = HashTables[t_key%ServerNum]->Get(t_key);
             clock_gettime(CLOCK_REALTIME, &time_end);
@@ -216,7 +217,10 @@ int main(int argc, char* argv[]){
 	        if (r_span > r_max) r_max = r_span;
 	        if (r_span < r_min) r_min = r_span;
             //if (ret == NONE) fail_get++;
-            if (ret == nullptr) fail_get++;
+            if (ret == nullptr) {
+                fail_get++;
+                //printf("failed %u\n", i);
+            }
             if (r_span > 10000) {
                 rtime[999]++;
             } else {
@@ -235,9 +239,9 @@ int main(int argc, char* argv[]){
             << ", max " << r_max << std::endl;
         }
         std::cout << "Read Lat PDF" << std::endl;
-        for (int i = 0; i < 1000; i++) {
-            printf("%d %llu\n", i*10, rtime[i]);
-        }
+        // for (int i = 0; i < 1000; i++) {
+        //     printf("%d %llu\n", i*10, rtime[i]);
+        // }
         return 0;
 	}else if(!strcmp(argv[1], "-w")){
         return 0;
@@ -326,7 +330,7 @@ int main(int argc, char* argv[]){
         //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = 100*1024*1024;//InsertSize;//100*1024*1024;
+        unsigned entries_to_get = InsertSize;//InsertSize;//100*1024*1024;
         Key_t t_key;
         size_t fail_get = 0;
         size_t success_get = 0;
@@ -336,8 +340,8 @@ int main(int argc, char* argv[]){
         //util::IPMWatcher watcher("cceh_get");
         //debug_perf_switch();
         for(unsigned i = 0; i < entries_to_get; i++){
-            t_key = u(re);
-            //t_key = i;
+            //t_key = u(re);
+            t_key = i;
             clock_gettime(CLOCK_REALTIME, &time_start);
             auto ret = HashTables[t_key%ServerNum]->Get(t_key);
             clock_gettime(CLOCK_REALTIME, &time_end);
@@ -347,6 +351,7 @@ int main(int argc, char* argv[]){
 	        if (r_span < r_min) r_min = r_span;
             if (ret == nullptr/*NONE*/) {
                 fail_get++;
+                printf("failed %u\n", i);
                 //break;
             } else {
                 if (strcmp(ret, value[t_key&0x1]) != 0) {

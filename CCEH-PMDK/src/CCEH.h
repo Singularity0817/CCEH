@@ -33,6 +33,7 @@ constexpr size_t kNumPairPerCacheLine = 4;
 constexpr size_t kNumCacheLine = 16;//4; infects the probe time, by default, it is 4
 constexpr size_t kOptaneUnitSize = 256;
 constexpr size_t kPoolSize = PMEMOBJ_MIN_POOL*1024;
+constexpr size_t kCheckpointInterval = (size_t)16*1024*1024;
 
 POBJ_LAYOUT_BEGIN(CCEH_LAYOUT);
 POBJ_LAYOUT_ROOT(CCEH_LAYOUT, struct CCEH_pmem);
@@ -294,6 +295,11 @@ public:
         _[i] = _[D_RO(seg_pmem)->pattern];
       }
     }
+    link_head = new size_t[capacity];
+    link_size = new unsigned[capacity];
+    pmemobj_memcpy(pop_, link_head, D_RO(D_RO(dir_pmem)->link_head_pmem), sizeof(size_t)*capacity, PMEMOBJ_F_MEM_NONTEMPORAL);
+    pmemobj_memcpy(pop_, link_size, D_RO(D_RO(dir_pmem)->link_size_pmem), sizeof(unsigned)*capacity, PMEMOBJ_F_MEM_NONTEMPORAL);
+    last_checkpoint = D_RO(dir_pmem)->checkpoint;
   } 
   bool Acquire(void) {
     bool unlocked = false;
@@ -345,9 +351,11 @@ class CCEH {
     std::queue<size_t> segment_q;
     std::mutex q_lock;
     std::condition_variable q_cv;
+    bool degraded_read = false;
     int init_pmem(const char* path){
       size_t pool_size = kPoolSize;//PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
       if(access(path, F_OK) != 0){
+        printf("creating new db...\n");
         int sds_write_value = 0;
 		    pmemobj_ctl_set(NULL, "sds.at_create", &sds_write_value);
         pop = pmemobj_create(path, LAYOUT, pool_size, 0666);
@@ -366,6 +374,7 @@ class CCEH {
         log->create(log_path.c_str(), kPoolSize);
         return 1;
       }else{
+        printf("opening existing db...\n");
         pop = pmemobj_open(path, LAYOUT);
         if(pop==NULL){
           perror(path);
@@ -380,9 +389,11 @@ class CCEH {
         log_path += ".log";
         log = new Wal();
         log->open(log_path.c_str());
+        recover();
         return 0;
       }
     }
+    void recover();
     void constructor(size_t global_depth_){
       global_depth = global_depth_;
       D_RW(cceh_pmem)->global_depth = global_depth;
