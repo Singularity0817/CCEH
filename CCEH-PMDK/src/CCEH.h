@@ -21,7 +21,7 @@
 //#include "../util/hash.h"
 //#include "../util/persist.h"
 //#include "../util/hash.h"
-
+//#define DEBUG
 #define LAYOUT "CCEH"
 #define TOID_ARRAY(x) TOID(x)
 
@@ -198,6 +198,9 @@ struct Segment {
   void pair_insert_dram(Key_t key, Value_t value){
     dpairs[dpair_num].key = key;
     dpairs[dpair_num].value = value;
+#ifdef DEBUG
+    printf("DEBUG: Insert key %lu to segment %p dpair pos %u.\n", key, this, dpair_num);
+#endif
     ++dpair_num;
   }
 };
@@ -225,8 +228,8 @@ public:
     lock = false;
     pop=pop_;
     _ = new Segment*[capacity];
-    link_head = new size_t[capacity];
-    link_size = new unsigned[capacity];
+    link_head = (size_t *)malloc(capacity*sizeof(size_t));//new size_t[capacity];
+    link_size = (unsigned *)malloc(capacity*sizeof(unsigned));//new unsigned[capacity];
     for (unsigned i = 0; i < capacity; ++i) link_head[i]=INVALID;
     D_RW(dir_pmem)->depth = depth;
     D_RW(dir_pmem)->capacity = capacity;

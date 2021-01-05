@@ -21,7 +21,7 @@ using namespace std;
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 2000;//500*1024*1024;
+const size_t InsertSize = 80*1024*1024;//500*1024*1024;
 const int ServerNum = 1;//8;
 const int ReservePow = 21 - (int)log2(ServerNum);//22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
@@ -201,7 +201,7 @@ int main(int argc, char* argv[]){
         //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = InsertSize;//100*1024*1024;
+        unsigned entries_to_get = InsertSize;//InsertSize;//100*1024*1024;
         Key_t t_key;
         //util::IPMWatcher watcher("cceh_get");
         //debug_perf_switch();
@@ -219,6 +219,9 @@ int main(int argc, char* argv[]){
             //if (ret == NONE) fail_get++;
             if (ret == nullptr) {
                 fail_get++;
+#ifdef DEBUG
+                printf("DEBUG: Failed get key %u\n", i);
+#endif
                 //printf("failed %u\n", i);
             }
             if (r_span > 10000) {
@@ -227,10 +230,11 @@ int main(int argc, char* argv[]){
                 rtime[r_span/10]++;
             }
             if (i%1000 == 0) {
-                printf("\rprogress %u", i);
-                fflush(stdout);
+                fprintf(stderr, "\rprogress %u", i);
+                fflush(stderr);
             }
         }
+        fprintf(stderr, "\n");
         //debug_perf_stop();
         std::cout << std::endl << "Get Entries: " << entries_to_get << ", fail get " << fail_get << ", size " 
             << ((double)(entries_to_get*sizeof(size_t)*2))/1024/1024 << "MB, time: " << elapsed 
@@ -351,7 +355,9 @@ int main(int argc, char* argv[]){
 	        if (r_span < r_min) r_min = r_span;
             if (ret == nullptr/*NONE*/) {
                 fail_get++;
-                printf("failed %u\n", i);
+#ifdef DEBUG
+                printf("DEBUG: Failed get key %u\n", i);
+#endif
                 //break;
             } else {
                 if (strcmp(ret, value[t_key&0x1]) != 0) {
