@@ -496,7 +496,7 @@ int Segment::major_compaction() {
 void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x, Segment** s) {
   int depth_diff = global_depth - local_depth;
   if (depth_diff == 0) {
-    if ((x % dir_cap) >= dir_cap/2) {
+    if ((x & (dir_cap-1)) >= dir_cap/2) {
       _[x-dir_cap/2] = s[0];
       segment_bind_pmem(x-dir_cap/2, s[0]);
       clflush((char*)&_[x-dir_cap/2], sizeof(Segment*));
@@ -522,7 +522,7 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
       //printf("lsb update : %d %d\n",x, x+dir_cap/2);
     }
   } else {
-    if ((x%dir_cap) >= dir_cap/2) {
+    if ((x&(dir_cap-1)) >= dir_cap/2) {
       LSBUpdate(local_depth+1, global_depth, dir_cap/2, x-dir_cap/2, s);
       LSBUpdate(local_depth+1, global_depth, dir_cap/2, x, s);
     } else {
@@ -544,7 +544,7 @@ STARTOVER:
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
 
 RETRY:
-  auto x = (key_hash % dir->capacity);
+  auto x = (key_hash & (dir->capacity-1));
   auto target = dir->_[x];
   if (log_entry_inserted == false) {
     size_t entry_size = 24+strlen(value)+1;
@@ -895,7 +895,7 @@ void CCEH::compactor(CCEH *db) {
 #ifdef DEBUG
                 printf("DEBUG: Doubling finish.\n");
 #endif
-                printf("Doubled to %lu.\n", db->global_depth);
+                //printf("Doubled to %lu.\n", db->global_depth);
               }
             }  // End of critical section
             while (!db->dir->Release()) {
@@ -912,12 +912,12 @@ void CCEH::compactor(CCEH *db) {
 #endif
       }
       if ((db->log->get_current_writepoint() - db->dir->last_checkpoint) >= kCheckpointInterval){
-        printf("Doing checkpoint\n");
+        //printf("Doing checkpoint\n");
         while(!db->dir->Acquire()) {asm("nop");}
         size_t checkpoint = db->log->get_current_writepoint();
         db->dir->do_checkpoint(checkpoint);
         while(!db->dir->Release()) {asm("nop");}
-        printf("Checkpoint finished\n");
+        //printf("Checkpoint finished\n");
       }
     }
   }

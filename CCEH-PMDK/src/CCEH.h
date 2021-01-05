@@ -269,7 +269,7 @@ public:
       link_head[x] = lhead;
       link_size[x] = lsize;
     } else {
-      if (x%dir_cap >= dir_cap/2) {
+      if ((x&(dir_cap-1)) >= dir_cap/2) {
         updateLinkList(local_depth+1, global_depth, dir_cap/2, x-dir_cap/2, lhead, lsize);
         updateLinkList(local_depth+1, global_depth, dir_cap/2, x, lhead, lsize);
       } else {

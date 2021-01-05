@@ -21,8 +21,9 @@ using namespace std;
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 1024*1024*80;//500*1024*1024;//500*1024*1024;
-const int ServerNum = 1;//8;
+const size_t InsertSize = 500*1024*1024;//500*1024*1024;
+const int ServerNum = 8;//8;
+const int ServerMask = ServerNum-1;
 const int ReservePow = 21 - (int)log2(ServerNum);//22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
@@ -201,16 +202,16 @@ int main(int argc, char* argv[]){
         //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = InsertSize;//InsertSize;//100*1024*1024;
+        unsigned entries_to_get = 100*1024*1024;//InsertSize;//100*1024*1024;
         Key_t t_key;
         //util::IPMWatcher watcher("cceh_get");
         //debug_perf_switch();
         size_t fail_get = 0;
         for(unsigned i = 0; i < entries_to_get; i++){
-            //t_key = u(re);
-            t_key = i;
+            t_key = u(re);
+            //t_key = i;
             clock_gettime(CLOCK_REALTIME, &time_start);
-            auto ret = HashTables[t_key%ServerNum]->Get(t_key);
+            auto ret = HashTables[t_key&ServerMask]->Get(t_key);
             clock_gettime(CLOCK_REALTIME, &time_end);
             r_span = ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
 	        elapsed += r_span;
@@ -227,7 +228,7 @@ int main(int argc, char* argv[]){
             } else {
                 rtime[r_span/10]++;
             }
-            if (i&0x3FFF == 0) {
+            if ((i&0x3FFF) == 0) {
                 fprintf(stderr, "\rrecover get progress %2.1lf%%", i*100.0/entries_to_get);
                 fflush(stderr);
             }
@@ -324,6 +325,7 @@ int main(int argc, char* argv[]){
         for (int i = 0; i < ServerNum; ++i) {
             HashTables[i]->stop_compaction();
         }
+        
         std::cout << "Begin to get..." << std::endl;
         {
 	    fflush(stdout);
@@ -332,7 +334,7 @@ int main(int argc, char* argv[]){
         //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
         elapsed = 0;
 	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
-        unsigned entries_to_get = InsertSize;//InsertSize;//100*1024*1024;
+        unsigned entries_to_get = 100*1024*1024;//InsertSize;//100*1024*1024;
         Key_t t_key;
         size_t fail_get = 0;
         size_t success_get = 0;
@@ -342,10 +344,10 @@ int main(int argc, char* argv[]){
         //util::IPMWatcher watcher("cceh_get");
         //debug_perf_switch();
         for(unsigned i = 0; i < entries_to_get; i++){
-            //t_key = u(re);
-            t_key = i;
+            t_key = u(re);
+            //t_key = i;
             clock_gettime(CLOCK_REALTIME, &time_start);
-            auto ret = HashTables[t_key%ServerNum]->Get(t_key);
+            auto ret = HashTables[t_key&ServerMask]->Get(t_key);
             clock_gettime(CLOCK_REALTIME, &time_end);
             r_span = ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
 	        elapsed += r_span;
