@@ -108,7 +108,8 @@ struct Segment {
   int64_t sema = 0;
   size_t pattern = 0;
   PMEMobjpool *pool_handler;
-  size_t link_head = INVALID;
+  //size_t link_head = INVALID;
+  //unsigned link_size = 0;
   //mutex m_;
   
   TOID(struct Segment_pmem) seg_pmem;
@@ -262,22 +263,36 @@ public:
   void segment_bind_pmem(size_t dir_index, struct Segment* s){
     D_RW(D_RW(dir_pmem)->segments)[dir_index] = s->seg_pmem;
   }
+  void updateLinkList(int local_depth, int global_depth, int dir_cap, int x, size_t lhead, unsigned lsize) {
+    int depth_diff = global_depth - local_depth;
+    if (depth_diff == 0) {
+      link_head[x] = lhead;
+      link_size[x] = lsize;
+    } else {
+      if (x%dir_cap >= dir_cap/2) {
+        updateLinkList(local_depth+1, global_depth, dir_cap/2, x-dir_cap/2, lhead, lsize);
+        updateLinkList(local_depth+1, global_depth, dir_cap/2, x, lhead, lsize);
+      } else {
+        updateLinkList(local_depth+1, global_depth, dir_cap/2, x, lhead, lsize);
+        updateLinkList(local_depth+1, global_depth, dir_cap/2, x+dir_cap/2, lhead, lsize);
+      }
+    }
+    return;
+  }
   void do_checkpoint(size_t checkpoint) {
     pmemobj_memcpy_persist(pop, D_RW(D_RW(dir_pmem)->link_size_pmem), link_size, sizeof(unsigned)*capacity);
     pmemobj_memcpy_persist(pop, D_RW(D_RW(dir_pmem)->link_head_pmem), link_head, sizeof(size_t)*capacity);
     D_RW(dir_pmem)->checkpoint = checkpoint;
     pmemobj_persist(pop, &D_RW(dir_pmem)->checkpoint, sizeof(size_t));
-    /*
-    printf("====== new checkpoing %lu : last checkpoint %lu =====\n", checkpoint, last_checkpoint);
-    for (unsigned i = 0; i < capacity; ++i) {
-      printf("%8lu ", D_RO(D_RO(dir_pmem)->link_head_pmem)[i]);
-    }
-    printf("\n");
-    for (unsigned i = 0; i < capacity; ++i) {
-      printf("%8u ", D_RO(D_RO(dir_pmem)->link_size_pmem)[i]);
-    }
-    printf("\n");
-    */
+    // printf("====== new checkpoing %lu : last checkpoint %lu =====\n", checkpoint, last_checkpoint);
+    // for (unsigned i = 0; i < capacity; ++i) {
+    //   printf("%8lu ", D_RO(D_RO(dir_pmem)->link_head_pmem)[i]);
+    // }
+    // printf("\n");
+    // for (unsigned i = 0; i < capacity; ++i) {
+    //   printf("%8u ", D_RO(D_RO(dir_pmem)->link_size_pmem)[i]);
+    // }
+    // printf("\n");
     last_checkpoint = checkpoint;
   }
   void load_pmem(PMEMobjpool* pop_, TOID(struct Directory_pmem) dir_pmem_){

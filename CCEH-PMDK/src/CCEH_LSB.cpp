@@ -159,6 +159,8 @@ int Segment::Insert(Key_t& key, Value_t value, size_t loc, size_t key_hash) {
   if (sema == -1) return 2;
   pair_insert_dram(key, value);
   //link_head = value;
+  //link_size++;
+  //link_head = value;
 
   if (dpair_num == kBufferSlot) { /* change to imm_dpairs */
 #ifdef DEBUG
@@ -401,6 +403,7 @@ int Segment::minor_compaction() {
   D_RW(seg_pmem)->l0_pair_num = l0_pair_num;
   //dpair_num = 0;
   spared_dpairs = imm_dpairs.load(std::memory_order_acquire);
+  //link_size -= kBufferSlot;
   imm_dpairs.store(nullptr, std::memory_order_release);
   int ret = (l0_pair_num == kL0Slot ? 1 : 0);
 #ifdef DEBUG
@@ -499,59 +502,23 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
       clflush((char*)&_[x-dir_cap/2], sizeof(Segment*));
       link_size[x-dir_cap/2] = 0;
       link_head[x-dir_cap/2] = INVALID;
-#ifdef DEBUG
-      for (int i = 0; i < capacity; ++i) {
-        printf("%p ", _[i]);
-      }
-      printf("\n");
-#endif
       _[x] = s[1];
       segment_bind_pmem(x, s[1]);
       clflush((char*)&_[x], sizeof(Segment*));
       link_size[x] = 0;
       link_head[x] = INVALID;
-#ifdef DEBUG
-      for (int i = 0; i < capacity; ++i) {
-        printf("%p ", _[i]);
-      }
-      printf("\n");
-#endif
       //printf("lsb update : %d %d\n",x-dir_cap/2, x);
     } else {
       _[x] = s[0];
       segment_bind_pmem(x, s[0]);
       clflush((char*)&_[x], sizeof(Segment*));
-#ifdef DEBUG
-      for (int i = 0; i < capacity; ++i) {
-        printf("%p ", _[i]);
-      }
-      printf("\n");
-#endif
       link_size[x] = 0;
       link_head[x] = INVALID;
-#ifdef DEBUG
-      for (int i = 0; i < capacity; ++i) {
-        printf("%p ", _[i]);
-      }
-      printf("\n");
-#endif
       _[x+dir_cap/2] = s[1];
       segment_bind_pmem(x+dir_cap/2, s[1]);
       clflush((char*)&_[x+dir_cap/2], sizeof(Segment*));
-#ifdef DEBUG
-      for (int i = 0; i < capacity; ++i) {
-        printf("%p ", _[i]);
-      }
-      printf("\n");
-#endif
       link_size[x+dir_cap/2] = 0;
       link_head[x+dir_cap/2] = INVALID;
-#ifdef DEBUG
-      for (int i = 0; i < capacity; ++i) {
-        printf("%p ", _[i]);
-      }
-      printf("\n");
-#endif
       //printf("lsb update : %d %d\n",x, x+dir_cap/2);
     }
   } else {
@@ -584,7 +551,7 @@ RETRY:
     char *log_entry = (char *)malloc(entry_size);
     *(Key_t *)log_entry = key;
     //while(!dir->Acquire()) {asm("nop");}
-    *(size_t *)(log_entry+8) = dir->link_head[x];//target->link_head;
+    *(size_t *)(log_entry+8) = dir->link_head[x];
     //while(!dir->Release()) {asm("nop");}
     *(size_t *)(log_entry+16) = strlen(value)+1;
     memcpy(log_entry+24, value, strlen(value)+1);
@@ -604,8 +571,13 @@ RETRY:
     goto STARTOVER;
   }
   while (!dir->Acquire()) {asm("nop");}
-  ++dir->link_size[x];
-  dir->link_head[x] = log_entry_pos;
+  //++dir->link_size[x];
+  //dir->link_head[x] = log_entry_pos;
+  //dir->link_size[x] = target->link_size;
+  //dir->link_head[x] = target->link_head;
+  unsigned lsize = dir->link_size[x]+1;
+  dir->updateLinkList(target->local_depth, global_depth, 
+                      dir->capacity, x, log_entry_pos, lsize);
   while (!dir->Release()) {asm("nop");}
   if (ret == 1 && !background_worker_working) {
     background_worker_working = true;
@@ -698,8 +670,10 @@ STARTOVER:
   if (degraded_read) {
     while(!dir->Acquire()) {asm("nop");}
     size_t pos = dir->link_head[x];
+    unsigned lsize = dir->link_size[x];
     while(!dir->Release()) {asm("nop");}
-    for (unsigned i = 0; i < dir->link_size[x]; ++i) {
+    //size_t pos = dir->link_head[x];//seg->link_head;
+    for (unsigned i = 0; i < lsize; ++i) {
       if (pos == INVALID) break;
       char *entry = log->get_entry(pos);
       Key_t k = *(Key_t *)(entry);
@@ -792,8 +766,14 @@ void CCEH::recover() {
     auto key_hash = h(&key, sizeof(key));
     const size_t mask = dir->capacity-1;
     auto x = (key_hash & mask);
-    dir->link_head[x] = current;
-    ++dir->link_size[x];
+    auto target = dir->_[x];
+    //target->link_head = current;
+    //target->link_size++;
+    unsigned lsize = dir->link_size[x]+1;
+    dir->updateLinkList(target->local_depth, global_depth, dir->capacity,
+                        x, current, lsize);
+    //dir->link_head[x] = current;
+    //++dir->link_size[x];
     current += (24+(*(size_t *)(entry+16)));
   }
   printf("recovered %u items.\n", items);
@@ -832,7 +812,11 @@ void CCEH::compactor(CCEH *db) {
         //fprintf(stderr, "Minor compact segment %lu.\n", i);
         int res = target->minor_compaction();
         while(!db->dir->Acquire()) {asm("nop");}
-        db->dir->link_size[x] -= Segment::kBufferSlot;
+        unsigned lsize = db->dir->link_size[x] - Segment::kBufferSlot;
+        size_t lhead = db->dir->link_head[x];
+        db->dir->updateLinkList(target->local_depth, db->global_depth,
+                                db->dir->capacity, x, lhead, lsize);
+        //db->dir->link_size[x] -= Segment::kBufferSlot;
         while(!db->dir->Release()) {asm("nop");}
         if (res == 1) {/* need major compaction */
           //fprintf(stderr, " Major compact segment %lu.\n", i);
@@ -856,24 +840,7 @@ void CCEH::compactor(CCEH *db) {
             { // CRITICAL SECTION - directory update
               auto x = (key_hash & (db->dir->capacity-1));
               if (db->dir->_[x]->local_depth < db->global_depth) {  // normal split
-#ifdef DEBUG
-                printf("Before LSBUpdate segment %lu: ", x);
-                for (int i = 0; i < db->dir->capacity; ++i) {
-                  printf("%p ", db->dir->_[i]);
-                }
-                printf("\n");
-#endif
                 db->dir->LSBUpdate(s[0]->local_depth, db->global_depth, db->dir->capacity, x, s);
-#ifdef DEBUG
-                printf("After LSBUpdate: ");
-                for (int i = 0; i < db->dir->capacity; ++i) {
-                  printf("%p ", db->dir->_[i]);
-                }
-                printf("\n");
-#endif
-#ifdef DEBUG
-                printf("DEBUG: Normal split successed.\n");
-#endif
               } else {  // directory doubling
 #ifdef DEBUG
                 printf("DEBUG: Doubling to %lu.\n", db->global_depth+1);
@@ -896,12 +863,6 @@ void CCEH::compactor(CCEH *db) {
                 memcpy(_new_link_size+db->dir->capacity, db->dir->link_size, sizeof(unsigned)*db->dir->capacity);
                 size_t *_old_link_head = db->dir->link_head;
                 unsigned *_old_link_size = db->dir->link_size;
-#ifdef DEBUG
-                printf("DEBUG: old_link_head %p, old_link_size %p.\n", _old_link_head, _old_link_size);
-                printf("DEBUG: new_link_head %p, new_link_size %p.\n", _new_link_head, _new_link_size);
-#endif
-                free(_old_link_size);
-                free(_old_link_head);
                 // TODO: free these two list results in free(): invalid pointer
                 db->dir->link_size = _new_link_size;
                 clflush((char*)&db->dir->link_size, sizeof(void *));
@@ -924,13 +885,12 @@ void CCEH::compactor(CCEH *db) {
                 size_t checkpoint = db->log->get_current_writepoint();
                 db->dir->do_checkpoint(checkpoint);
                 delete d;
-// #ifdef DEBUG
-//                 printf("DEBUG: old_link_head %p, old_link_size %p to delete.\n", _old_link_head, _old_link_size);
-// #endif
-//                 free(_old_link_head);
-//                 free(_old_link_size);
-                //fprintf(stderr, "   finish doubling %lu.\n", db->global_depth);
-                //fflush(stderr);
+#ifdef DEBUG
+                printf("DEBUG: old_link_head %p, old_link_size %p.\n", _old_link_head, _old_link_size);
+                printf("DEBUG: new_link_head %p, new_link_size %p.\n", _new_link_head, _new_link_size);
+#endif
+                free(_old_link_size);
+                free(_old_link_head);
                 // TODO: requiered to do this atomically
 #ifdef DEBUG
                 printf("DEBUG: Doubling finish.\n");
@@ -952,14 +912,12 @@ void CCEH::compactor(CCEH *db) {
 #endif
       }
       if ((db->log->get_current_writepoint() - db->dir->last_checkpoint) >= kCheckpointInterval){
-        fprintf(stderr, "Doing checkpoint\n");
-        fflush(stderr);
+        printf("Doing checkpoint\n");
         while(!db->dir->Acquire()) {asm("nop");}
         size_t checkpoint = db->log->get_current_writepoint();
         db->dir->do_checkpoint(checkpoint);
         while(!db->dir->Release()) {asm("nop");}
-        fprintf(stderr, "Checkpoint finished\n");
-        fflush(stderr);
+        printf("Checkpoint finished\n");
       }
     }
   }

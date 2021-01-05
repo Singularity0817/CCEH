@@ -21,7 +21,7 @@ using namespace std;
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 80*1024*1024;//500*1024*1024;
+const size_t InsertSize = 1024*1024*80;//500*1024*1024;//500*1024*1024;
 const int ServerNum = 1;//8;
 const int ReservePow = 21 - (int)log2(ServerNum);//22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
@@ -219,9 +219,7 @@ int main(int argc, char* argv[]){
             //if (ret == NONE) fail_get++;
             if (ret == nullptr) {
                 fail_get++;
-#ifdef DEBUG
                 printf("DEBUG: Failed get key %u\n", i);
-#endif
                 //printf("failed %u\n", i);
             }
             if (r_span > 10000) {
@@ -229,8 +227,8 @@ int main(int argc, char* argv[]){
             } else {
                 rtime[r_span/10]++;
             }
-            if (i%1000 == 0) {
-                fprintf(stderr, "\rprogress %u", i);
+            if (i&0x3FFF == 0) {
+                fprintf(stderr, "\rrecover get progress %2.1lf%%", i*100.0/entries_to_get);
                 fflush(stderr);
             }
         }
@@ -355,9 +353,7 @@ int main(int argc, char* argv[]){
 	        if (r_span < r_min) r_min = r_span;
             if (ret == nullptr/*NONE*/) {
                 fail_get++;
-#ifdef DEBUG
                 printf("DEBUG: Failed get key %u\n", i);
-#endif
                 //break;
             } else {
                 if (strcmp(ret, value[t_key&0x1]) != 0) {
