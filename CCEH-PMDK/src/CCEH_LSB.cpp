@@ -604,10 +604,13 @@ CCEH::CCEH(const char* path)
     constructor(0);
     std::cout << "initCap 1 depth 0" << std::endl;
     size_t capacity = dir->capacity;
+    dir->last_checkpoint = log->get_current_writepoint();
+    D_RW(dir->dir_pmem)->checkpoint = dir->last_checkpoint;
     for(unsigned i=0;i<capacity;i++){
       dir->_[i] = new Segment(pop, global_depth);
       dir->segment_bind_pmem(i, dir->_[i]);
-      dir->_[i]->pattern = i;    
+      dir->_[i]->pattern = i;
+      dir->_[i]->set_pattern_pmem(i);
     }
   }
 }
@@ -619,10 +622,13 @@ CCEH::CCEH(size_t initCap, const char* path)
     constructor(log2(initCap));
     std::cout << "initCap " << initCap << " depth " << log2(initCap) << std::endl;
     size_t capacity = dir->capacity;
+    dir->last_checkpoint = log->get_current_writepoint();
+    D_RW(dir->dir_pmem)->checkpoint = dir->last_checkpoint;
     for(unsigned i=0;i<capacity;i++){
       dir->_[i] = new Segment(pop, global_depth);
       dir->segment_bind_pmem(i, dir->_[i]);
-      dir->_[i]->pattern = i;    
+      dir->_[i]->pattern = i;
+      dir->_[i]->set_pattern_pmem(i);  
     }
   }
 }
@@ -634,6 +640,10 @@ CCEH::~CCEH(void)
   if (!shutting_down.load(std::memory_order_acquire))
     stop_compaction();
   log->flush();
+  // for (size_t i = 0; i < dir->capacity; ++i) {
+  //   printf("Segment %lu, pattern %lu, pmem_pattern %lu\n, pairs %p, depth %lu, l0_pairs %p, l0_pair_num %u.\n", 
+  //           i, dir->_[i]->pattern, D_RO(dir->_[i]->seg_pmem)->pattern, D_RO(dir->_[i]->pairs), dir->_[i]->local_depth, D_RO(dir->_[i]->l0_pairs), dir->_[i]->l0_pair_num);
+  // }
   std::cout << "SizeofDirectly: " << sizeof(struct Directory) << ", SizeofSegments: " << dir->segment_size() << std::endl
             << "SegmentNum: " << dir->segment_num() << ", SingleSegmentSize: " << sizeof(struct Segment) << std::endl;
   /*
@@ -679,7 +689,7 @@ STARTOVER:
       Key_t k = *(Key_t *)(entry);
       if (k == key) {
         char *res = (entry+24);
-        //printf("key %lu got in link list.\n", key);
+        //printf(" found in link list pos.\n", pos);
         return res;
       } else {
         pos = *(size_t *)(entry+8);
@@ -895,7 +905,7 @@ void CCEH::compactor(CCEH *db) {
 #ifdef DEBUG
                 printf("DEBUG: Doubling finish.\n");
 #endif
-                //printf("Doubled to %lu.\n", db->global_depth);
+                printf("Doubled to %lu.\n", db->global_depth);
               }
             }  // End of critical section
             while (!db->dir->Release()) {

@@ -15,7 +15,7 @@
 #include "./ycsb_2.h"
 using namespace std;
 
-//#define RESERVE_SPACE
+#define RESERVE_SPACE
 //#define RECORD_WA
 //#define YCSB_TEST
 
@@ -220,7 +220,7 @@ int main(int argc, char* argv[]){
             //if (ret == NONE) fail_get++;
             if (ret == nullptr) {
                 fail_get++;
-                printf("DEBUG: Failed get key %u\n", i);
+                //printf("DEBUG: Failed get key %u\n", i);
                 //printf("failed %u\n", i);
             }
             if (r_span > 10000) {
@@ -355,7 +355,7 @@ int main(int argc, char* argv[]){
 	        if (r_span < r_min) r_min = r_span;
             if (ret == nullptr/*NONE*/) {
                 fail_get++;
-                printf("DEBUG: Failed get key %u\n", i);
+                //printf("DEBUG: Failed get key %u\n", i);
                 //break;
             } else {
                 if (strcmp(ret, value[t_key&0x1]) != 0) {

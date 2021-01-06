@@ -33,7 +33,7 @@ constexpr size_t kNumPairPerCacheLine = 4;
 constexpr size_t kNumCacheLine = 16;//4; infects the probe time, by default, it is 4
 constexpr size_t kOptaneUnitSize = 256;
 constexpr size_t kPoolSize = PMEMOBJ_MIN_POOL*1024;
-constexpr size_t kCheckpointInterval = (size_t)16*1024*1024;
+constexpr size_t kCheckpointInterval = (size_t)128*1024*1024;
 
 POBJ_LAYOUT_BEGIN(CCEH_LAYOUT);
 POBJ_LAYOUT_ROOT(CCEH_LAYOUT, struct CCEH_pmem);
@@ -144,7 +144,11 @@ struct Segment {
     }
   }
 
-  Segment(){ }
+  Segment(){
+    dpairs = (Pair *)malloc(kBufferSlot*sizeof(Pair));
+    spared_dpairs = (Pair *)malloc(kBufferSlot*sizeof(Pair));
+    imm_dpairs.store(nullptr, std::memory_order_release);
+  }
 
   void load_pmem(PMEMobjpool *pop, TOID(struct Segment_pmem) seg_pmem_){
     pool_handler = pop;
@@ -156,6 +160,7 @@ struct Segment {
 
     l0_pairs = D_RO(seg_pmem)->l0_pairs;
     l0_pair_num = D_RO(seg_pmem)->l0_pair_num;
+    //printf("pairs %p, depth %lu, l0_pairs %p, l0_pair_num %u.\n", D_RO(pairs), local_depth, D_RO(l0_pairs), l0_pair_num);
     //kNumSlot = D_RO(seg_pmem)->pair_size;
 	}
 
@@ -231,7 +236,10 @@ public:
     _ = new Segment*[capacity];
     link_head = (size_t *)malloc(capacity*sizeof(size_t));//new size_t[capacity];
     link_size = (unsigned *)malloc(capacity*sizeof(unsigned));//new unsigned[capacity];
-    for (unsigned i = 0; i < capacity; ++i) link_head[i]=INVALID;
+    for (unsigned i = 0; i < capacity; ++i) {
+      link_head[i]=INVALID;
+      link_size[i]=0;
+    }
     D_RW(dir_pmem)->depth = depth;
     D_RW(dir_pmem)->capacity = capacity;
     D_RW(dir_pmem)->lock = lock;
@@ -306,6 +314,7 @@ public:
     segments = D_RO(dir_pmem)->segments;
     for(size_t i=0;i<capacity;i++){
 	    TOID(struct Segment_pmem) seg_pmem = D_RO(segments)[i];
+      //printf("Segment %lu, pattern %lu\n", i, D_RO(seg_pmem)->pattern);
       if(i == D_RO(seg_pmem)->pattern){
         _[i] = new Segment();
         _[i]->load_pmem(pop, seg_pmem);
