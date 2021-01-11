@@ -254,7 +254,9 @@ void Directory::LSBUpdate(int local_depth, int global_depth, int dir_cap, int x,
   return;
 }
 
-void CCEH::Insert(Key_t& key, Value_t value) {
+void CCEH::Insert(Key_t& key, char *value) {
+  bool logged = false;
+  uint64_t pos = 0;
 STARTOVER:
   auto key_hash = h(&key, sizeof(key));
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
@@ -263,7 +265,17 @@ RETRY:
   auto x = (key_hash % dir->capacity);
   auto target = dir->_[x];
   //printf("{{{%d %d}}}\n",key,key_hash);
-  auto ret = target->Insert(key, value, y, key_hash);
+  if (!logged) {
+    size_t entry_size = 16+strlen(value)+1;
+    char *buffer = (char *)malloc(16+strlen(value)+1);
+    *(Key_t *)buffer = key;
+    *(size_t *)(buffer+1) = strlen(value)+1;
+    memcpy(buffer+16, value, strlen(value)+1);
+    pos = log->append(buffer, entry_size);
+    logged = true;
+  }
+  //auto ret = target->Insert(key, value, y, key_hash);
+  auto ret = target->Insert(key, pos, y, key_hash);
 
   if (ret == 1) {
     Segment** s = target->Split(pop);
@@ -359,7 +371,7 @@ Value_t CCEH::Get(Key_t& key) {
   const size_t mask = dir->capacity-1;
   auto x = (key_hash & mask);
   auto y = (key_hash >> (sizeof(key_hash)*8-kShift)) * kNumPairPerCacheLine;
-
+  uint64_t pos;
   auto dir_ = dir->_[x];
   //get_entry_num++;
   for (unsigned i = 0; i < kNumPairPerCacheLine * kNumCacheLine; ++i) {
@@ -368,7 +380,12 @@ Value_t CCEH::Get(Key_t& key) {
     //get_probe_time++;
     Key_t key_ = dir->_[x]->get_key(slot);
     if (key_ == key) {
-     return dir->_[x]->get_value(slot);
+      pos = dir->_[x]->get_value(slot);
+      char *handler = log->get_entry(pos);
+      size_t vsize = *((uint64_t *)handler+1);
+      char *value = (char *)malloc(vsize*sizeof(char));
+      memcpy(value, handler+16, vsize);
+      return pos;
     }
   }
  return NONE;

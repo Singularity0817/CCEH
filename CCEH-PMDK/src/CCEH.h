@@ -11,6 +11,7 @@
 #include <vector>
 #include "../util/pair.h"
 #include "../src/hash.h"
+#include "../src/wal.h"
 
 #define LAYOUT "CCEH"
 #define TOID_ARRAY(x) TOID(x)
@@ -21,6 +22,7 @@ constexpr size_t kShift = kSegmentBits;
 constexpr size_t kSegmentSize = (1 << kSegmentBits) * 16 * 4;
 constexpr size_t kNumPairPerCacheLine = 4;
 constexpr size_t kNumCacheLine = 4;//4; infects the probe time, by default, it is 4
+constexpr size_t kLogSize = (size_t)10*1024*1024*1024;
 
 POBJ_LAYOUT_BEGIN(CCEH_LAYOUT);
 POBJ_LAYOUT_ROOT(CCEH_LAYOUT, struct CCEH_pmem);
@@ -216,7 +218,7 @@ class CCEH {
     CCEH(const char*);
     CCEH(size_t, const char*);
     ~CCEH(void);
-    void Insert(Key_t&, Value_t);
+    void Insert(Key_t&, char *);
     Value_t Get(Key_t&);
     int Delete(Key_t&);
     /*bool InsertOnly(Key_t&, Value_t);
@@ -231,44 +233,53 @@ class CCEH {
     PMEMobjpool *pop;
     Directory* dir;
     size_t global_depth;
+    Wal *log;
     int init_pmem(const char* path){
-
-  size_t pool_size = PMEMOBJ_MIN_POOL*1024*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
-
-	if(access(path, F_OK) != 0){
-          pop = pmemobj_create(path, LAYOUT, pool_size, 0666);
-          //pop = pmemobj_create(path, LAYOUT, 8*1024*1024*1024, 0666);
-          if(pop==NULL){
-   		perror(path);
-   		exit(-1);
-          }
-    printf("Pmem pool size %.1lfGB\n", (double)pool_size/(1024.0*1024*1024));
-  	  cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
-	  POBJ_ALLOC(pop, &dir_pmem, struct Directory_pmem, sizeof(struct Directory_pmem), NULL,NULL);
-	  D_RW(cceh_pmem)->directories = dir_pmem;
-	  return 1;
-	}else{
-   	  pop = pmemobj_open(path, LAYOUT);
-	  if(pop==NULL){
-	    perror(path);
-	    exit(-1);	
-	  }
-	  cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
-	  global_depth = D_RO(cceh_pmem)->global_depth;
-	  dir_pmem = D_RO(cceh_pmem)->directories;
-          dir = new Directory();
-	  dir->load_pmem(pop, dir_pmem);
-	  return 0;
-	}
+      size_t pool_size = PMEMOBJ_MIN_POOL*256*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
+      log = new Wal();
+      if(access(path, F_OK) != 0){
+        int sds_write_value = 0;
+        pmemobj_ctl_set(NULL, "sds.at_create", &sds_write_value);
+        pop = pmemobj_create(path, LAYOUT, pool_size, 0666);
+        //pop = pmemobj_create(path, LAYOUT, 8*1024*1024*1024, 0666);
+        if(pop==NULL){
+          perror(path);
+          exit(-1);
+        }
+        cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
+        POBJ_ALLOC(pop, &dir_pmem, struct Directory_pmem, sizeof(struct Directory_pmem), NULL,NULL);
+        D_RW(cceh_pmem)->directories = dir_pmem;
+        std::string log_path(path);
+        log_path += ".log";
+        log->create(log_path.c_str(), kLogSize);
+        printf("Pmem pool size %.1lfGB, log path %s and size %lu\n", 
+                (double)pool_size/(1024.0*1024*1024), log_path.c_str(), kLogSize);
+        return 1;
+      }else{
+          pop = pmemobj_open(path, LAYOUT);
+        if(pop==NULL){
+          perror(path);
+          exit(-1);	
+        }
+        cceh_pmem = POBJ_ROOT(pop, struct CCEH_pmem);
+        global_depth = D_RO(cceh_pmem)->global_depth;
+        dir_pmem = D_RO(cceh_pmem)->directories;
+              dir = new Directory();
+        dir->load_pmem(pop, dir_pmem);
+        std::string log_path(path);
+        log_path += ".log";
+        log->open(log_path.c_str());
+        return 0;
+      }
     }
 
     void constructor(size_t global_depth_){
-	global_depth = global_depth_;
-	D_RW(cceh_pmem)->global_depth = global_depth;
-	dir = new Directory(pop,global_depth, dir_pmem);
+      global_depth = global_depth_;
+      D_RW(cceh_pmem)->global_depth = global_depth;
+      dir = new Directory(pop,global_depth, dir_pmem);
     }
     void set_global_depth_pmem(size_t global_depth){
-	D_RW(cceh_pmem)->global_depth = global_depth;
+	    D_RW(cceh_pmem)->global_depth = global_depth;
     }
     void* operator new(size_t size) {
       void *ret;

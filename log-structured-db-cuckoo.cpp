@@ -34,16 +34,16 @@ mutex cout_lock;
 const size_t InsertSize = 1000*1024*1024;
 const size_t recordInterval = 1024*1024;
 const int BatchSize = 1024;
-const int ServerNum = 1;
+const int ServerNum = 16;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
 const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
 const size_t EstimateLogSize = 2*(512+(LogEntrySize*InsertSizePerServer)+512*1024*1024);
 //const size_t EstimateLogSize = 512*1024*1024;
-const size_t testTimes = 2;
+const size_t testTimes = 1;
 
 //#define YCSB_TEST
-//#define RESERVE_MODE
+#define RESERVE_MODE
 //#define RECORD_WA
 #define RECORD_AS_PROGRESS
 
@@ -85,7 +85,7 @@ class my_unordered_map
             //m = new unordered_map<Key_t, Value_t>;
             m = new robin_hood::unordered_map<Key_t, Value_t>;
 #ifdef RESERVE_MODE
-            m->reserve(InsertSize/ServerNum*1.0);
+            m->reserve(InsertSize/ServerNum/0.75);
 #endif
         }
         ~my_unordered_map() {
@@ -426,7 +426,7 @@ int main(int argc, char *argv[]){
                 finishSize += dbParams[i]->finishSize;
             }
             new_fs = finishSize;
-            new_progress = new_fs/(double)InsertSize*100;
+            new_progress = new_fs*100.0/(double)InsertSize;
 
             new_progress_checkpoint = GetTimeNsec();
 #ifndef RECORD_AS_PROGRESS            

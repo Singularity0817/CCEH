@@ -17,15 +17,16 @@ using namespace std;
 
 //#define RESERVER_SPACE
 //#define RECORD_WA
-#define YCSB_TEST
+//#define YCSB_TEST
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
-const size_t InsertSize = 2000*1024*1024;
+const size_t InsertSize = 1000*1024*1024;
 const int ServerNum = 8;
 const int ReservePow = 22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
+const size_t valueSize = 16;
 
 const size_t testTimes = 1;
 
@@ -94,14 +95,17 @@ void ServerThread(struct server_thread_param *p)
     CCEH *db = p->db;
     Key_t key;
     uint64_t counter = 0;
+    char value[valueSize];
+    memset(value, 'a', valueSize-1);
+    value[valueSize-1] = '\0';
     __sync_fetch_and_add(&ReadyCount, 1);
     //std::cout << "worker " << id << " ready. " << ReadyCount << std::endl;
-    while(ThreadStart != true) {fflush(stdout);}
+    while(ThreadStart != true) {asm("nop");}
     //std::cout << "worker " << id << " begin to put " << std::endl;
     for (unsigned t = 0; t < testTimes; t++) {
         for (unsigned i = 0; i < InsertSizePerServer; i++) {
             Key_t key = i*ServerNum+id;
-            db->Insert(key, ConstValue[i%2]);
+            db->Insert(key, value);//ConstValue[i%2]);
             counter++;
             if (counter % 10000 == 0) {
                 //__sync_fetch_and_add(&finishSize, counter);
@@ -273,7 +277,7 @@ int main(int argc, char* argv[]){
             new_progress = fs/(double)InsertSize*100.0;
             new_progress_checkpoint = GetTimeNsec();
             //if (new_progress_checkpoint - old_progress_checkpoint >= 1000000000) {
-            if (new_progress - old_progress >= 0.05) {
+            if (new_progress - old_progress >= 0.5) {
                 //printf("\rProgress %2.1lf%%", new_progress);
                 //clock_gettime(CLOCK_REALTIME, &time_middle);
                 //double span = (time_middle.tv_sec - time_start.tv_sec) + (time_middle.tv_nsec - time_start.tv_nsec)/1000000000.0;
