@@ -33,14 +33,15 @@ using namespace std;
 mutex cout_lock;
 const size_t InsertSize = 1000*1024*1024;
 const size_t recordInterval = 1024*1024;
-const int BatchSize = 1024;
-const int ServerNum = 16;
+//const int BatchSize = 1024;
+const int ServerNum = 8;
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {"VALUE_1", "value_2"};
-const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+strlen(ConstValue[0])+1;
-const size_t EstimateLogSize = 2*(512+(LogEntrySize*InsertSizePerServer)+512*1024*1024);
-//const size_t EstimateLogSize = 512*1024*1024;
 const size_t testTimes = 1;
+const size_t valueSize = 16;
+const size_t LogEntrySize = sizeof(Key_t)+sizeof(size_t)+valueSize;
+const size_t EstimateLogSize = testTimes*(512+(LogEntrySize*InsertSizePerServer)+1024);
+//const size_t EstimateLogSize = 512*1024*1024;
 
 //#define YCSB_TEST
 #define RESERVE_MODE
@@ -118,7 +119,7 @@ class myDB
             //index = new CCEH();
             //index = new CuckooHash(1024*1024);
             //index = new LevelHashing(10);
-            insert_buffer_size = sizeof(Key_t)+sizeof(size_t)+sizeof(int64_t);
+            insert_buffer_size = sizeof(Key_t)+sizeof(size_t)+valueSize;
             insert_buffer = (char *)malloc(insert_buffer_size);
             index = new my_unordered_map();
             log = new Wal();
@@ -143,7 +144,7 @@ class myDB
 #endif
                     index->Insert(*((Key_t *)((char *)log_data_handler+ancho)), reinterpret_cast<Value_t>(ancho+WAL_HEADER_SIZE));
                     value_size = *(size_t *)((char *)log_data_handler+ancho+sizeof(Key_t));
-                    ancho += (sizeof(Key_t)+sizeof(size_t)+value_size+1);
+                    ancho += (sizeof(Key_t)+sizeof(size_t)+value_size);
                     counter++;
                     new_progress = ancho/(double)log_size*100;
                     if (new_progress - old_progress >= 1) {
@@ -160,13 +161,13 @@ class myDB
             delete log;
             //delete request_queue;
         }
-        inline void Insert(Key_t &key, Value_t value) {
-            size_t value_size = strlen(value);
-            int buffer_size = sizeof(Key_t)+sizeof(size_t)+strlen(value)+1;
+        inline void Insert(Key_t &key, char *value) {
+            size_t value_size = strlen(value)+1;
+            int buffer_size = sizeof(Key_t)+sizeof(size_t)+value_size;
             char *buffer = (char *)malloc(buffer_size);
             memcpy(buffer, &key, sizeof(Key_t));
             memcpy(buffer+sizeof(Key_t), &value_size, sizeof(size_t));
-            memcpy(buffer+sizeof(Key_t)+sizeof(size_t), value, value_size+1);
+            memcpy(buffer+sizeof(Key_t)+sizeof(size_t), value, value_size);
             auto pos = log->append(buffer, buffer_size);
             index->Insert(key, reinterpret_cast<Value_t>(pos));
             free(buffer);
@@ -215,7 +216,7 @@ class myDB
             insert_index_insert_time += (GetTimeNsec() - third_time);
             //cout << "End Batch" << endl;
         }
-        inline int Get(Key_t &key, Value_t *value) {
+        inline int Get(Key_t &key, char *value) {
             //Value_t pos;
             uint64_t pos;
             int res = index->Get(key, (Value_t *)(&pos));
@@ -224,11 +225,14 @@ class myDB
                 return 0;
             } else {
                 //read target key from log
-                void *data_handler = log->get_entry(pos);
-                *value = (Value_t)((char *)data_handler+sizeof(Key_t)+sizeof(size_t));
+                char *data_handler = log->get_entry(pos);
+                size_t vsize = *((uint64_t *)data_handler+1);
+                memcpy(value, data_handler+16, vsize);
+                //*value = (Value_t)((char *)data_handler+sizeof(Key_t)+sizeof(size_t));
                 return 1;
             }
         }
+        /*
         inline int Get(const int64_t &key, int64_t *value) {
             //Value_t pos;
             uint64_t pos;
@@ -243,7 +247,7 @@ class myDB
                 memcpy(value, (char *)data_handler+sizeof(int64_t)+sizeof(size_t), sizeof(int64_t));
                 return 1;
             }
-        }
+        }*/
         inline void print_put_stat() {
             cout << "Insert prepare time " << insert_prepare_time << ", log append time " << insert_log_append_time << ", index insert time " << insert_index_insert_time << endl;
             cout << "    index update time " << index->insert_time << ", rehash time " << index->rehash_time << endl;
@@ -289,6 +293,9 @@ void db_server(db_server_param *p)
     for (unsigned i = 0; i < InsertSizePerServer; i++) {
         keys.push_back(i*ServerNum+id);
     }
+    char value[valueSize];
+    memset(value, 'a', valueSize-1);
+    value[valueSize-1] = '\0';
     cout_lock.lock();
     cout << "Server " << id << " shuffling keys." << endl;
     cout_lock.unlock();
@@ -301,22 +308,11 @@ void db_server(db_server_param *p)
     while(!(p->start->load(std::memory_order_relaxed))) {}
     uint64_t thread_start = GetTimeNsec();
     for (unsigned t = 0; t < testTimes; t++) {
-        /*
-        for (unsigned i = 0; i < InsertSizePerServer/BatchSize; i++) {
-            pairs_to_put.clear();
-            for (unsigned j = 0; j < BatchSize; j++) {
-                pairs_to_put.push_back(Pair((i*BatchSize+j)*ServerNum+id, ConstValue[j%2]));
-            }
-            db->BatchInsert(&pairs_to_put);
-            //__sync_fetch_and_add(finishSize, BatchSize);
-            p->finishSize += BatchSize;
-        }
-        */
         //for (unsigned i = 0; i < InsertSizePerServer; i++) {
         for (auto it = keys.begin(); it != keys.end(); it++) {
             //key = i*ServerNum+id;
             key = *it;
-            db->Insert(key, ConstValue[0]);
+            db->Insert(key, valueSize, value);//ConstValue[0]);
             counter++;
             if (counter == 1000) {
                 p->finishSize += counter;
@@ -397,7 +393,7 @@ int main(int argc, char *argv[]){
         size_t finishSize = 0;
         for (int i = 0; i < ServerNum; i++) {
             std::string log_path = LOG_DIR_PATH+std::to_string(i)+".log";
-            cout << "Log file for server " << i << " is " << log_path << endl;
+            cout << "Log file for server " << i << " is " << log_path << " of size " << EstimateLogSize/1024/1024 << "MB." << endl;
             dbs[i] = new myDB(create, log_path.c_str());
             dbParams[i] = new db_server_param(i, dbs[i], &start, &readyCount);
             server_threads[i] = thread(db_server, dbParams[i]);
@@ -481,23 +477,24 @@ int main(int argc, char *argv[]){
         unsigned wrongget = 0;
         unsigned failedget = 0;
         Key_t key;
-        Value_t value;
+        //Value_t value;
+        char value[valueSize];
         {
         //IPMWatcher write_watcher("read");
         for(unsigned i=0; i<itemstoget; i++){
             key = u(re);
             clock_gettime(CLOCK_REALTIME, &time_start);
-            auto ret = dbs[key%ServerNum]->Get(key, &value);
+            auto ret = dbs[key%ServerNum]->Get(key, value);
             clock_gettime(CLOCK_REALTIME, &time_end);
             get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
             //cout << "Value for key " << key << " is " << ret << endl;
             if (ret == 0) {
                 failedget++;
             //} else if (strcmp(value, ConstValue[((key-key%ServerNum)/ServerNum)%2]) != 0) {
-            } else if (strcmp(value, ConstValue[0]) != 0) {
+            }/* else if (strcmp(value, ConstValue[0]) != 0) {
                 wrongget++;
                 //cout << "Wrong value for key " << key << " : " << ret << endl;
-            }
+            }*/
             get_time_span += get_time_this;
             if (get_time_this > get_time_max) get_time_max = get_time_this;
             if (get_time_this < get_time_min) get_time_min = get_time_this;
@@ -554,11 +551,12 @@ int main(int argc, char *argv[]){
         uint64_t rtime[1000];
         for (int i = 0; i < 1000; i++) rtime[i] = 0;
         Key_t key;
-        Value_t value;
+        //Value_t value;
+        char value[valueSize];
         for(unsigned i=0; i<itemstoget; i++){
             key = u(re);
             clock_gettime(CLOCK_REALTIME, &time_start);
-            auto ret = dbs[key%ServerNum]->Get(key, &value);
+            auto ret = dbs[key%ServerNum]->Get(key, value);
             clock_gettime(CLOCK_REALTIME, &time_end);
             get_time_this = ((time_end.tv_sec - time_start.tv_sec)*1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
             get_time_span += get_time_this;
