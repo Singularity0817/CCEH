@@ -16,6 +16,8 @@
 #define LAYOUT "CCEH"
 #define TOID_ARRAY(x) TOID(x)
 
+const int ServerNum = 8;
+
 constexpr size_t kSegmentBits = 8;
 constexpr size_t kMask = (1 << kSegmentBits)-1;
 constexpr size_t kShift = kSegmentBits;
@@ -235,7 +237,7 @@ class CCEH {
     size_t global_depth;
     Wal *log;
     int init_pmem(const char* path){
-      size_t pool_size = PMEMOBJ_MIN_POOL*256*3;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
+      size_t pool_size = PMEMOBJ_MIN_POOL*1024*12/ServerNum;//PMEMOBJ_MIN_POOL*1024*12; //for one thread
       log = new Wal();
       if(access(path, F_OK) != 0){
         int sds_write_value = 0;

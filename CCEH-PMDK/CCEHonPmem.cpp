@@ -18,15 +18,18 @@ using namespace std;
 //#define RESERVER_SPACE
 //#define RECORD_WA
 //#define YCSB_TEST
+#define RECORD_GET_LAT
+#define RECORD_PUT_LAT
 
 const char *const CCEH_PATH = "/mnt/pmem0/zwh_test/CCEH/";
 mutex cout_lock;
 const size_t InsertSize = 1000*1024*1024;
-const int ServerNum = 8;
+
+const int GetThreadNum = 8;
 const int ReservePow = 22 - (int)log2(ServerNum);
 const size_t InsertSizePerServer = InsertSize/ServerNum;
 const Value_t ConstValue[2] = {1, 2};
-const size_t valueSize = 16;
+const size_t valueSize = 8;
 
 const size_t testTimes = 1;
 
@@ -84,8 +87,15 @@ struct server_thread_param {
     CCEH *db;
     bool *start;
     int *readyCount;
+#ifdef RECORD_PUT_LAT
+    vector<unsigned> put_lats;
+#endif
     server_thread_param(int _id, CCEH *_db, bool *_start, int *_readyCount) :
-        id(_id), db(_db), start(_start), readyCount(_readyCount) {}
+        id(_id), db(_db), start(_start), readyCount(_readyCount) {
+#ifdef RECORD_PUT_LAT
+            put_lats = vector<unsigned>(1000, 0);
+#endif
+        }
 };
 std::atomic<size_t> finishSize(0);
 void ServerThread(struct server_thread_param *p)
@@ -101,11 +111,22 @@ void ServerThread(struct server_thread_param *p)
     __sync_fetch_and_add(&ReadyCount, 1);
     //std::cout << "worker " << id << " ready. " << ReadyCount << std::endl;
     while(ThreadStart != true) {asm("nop");}
+#ifdef RECORD_PUT_LAT
+    uint64_t putbegin, tput;
+#endif
     //std::cout << "worker " << id << " begin to put " << std::endl;
     for (unsigned t = 0; t < testTimes; t++) {
         for (unsigned i = 0; i < InsertSizePerServer; i++) {
             Key_t key = i*ServerNum+id;
+#ifdef RECORD_PUT_LAT
+            putbegin = GetTimeNsec();
+#endif
             db->Insert(key, value);//ConstValue[i%2]);
+#ifdef RECORD_PUT_LAT
+            tput = GetTimeNsec() - putbegin;
+            if (tput/10 < 1000) ++p->put_lats[tput/10];
+            else ++p->put_lats[999];
+#endif
             counter++;
             if (counter % 10000 == 0) {
                 //__sync_fetch_and_add(&finishSize, counter);
@@ -118,6 +139,49 @@ void ServerThread(struct server_thread_param *p)
     //__sync_fetch_and_add(&finishSize, counter);
     finishSize.fetch_add(counter);
 }
+
+struct get_thread_param {
+    CCEH **dbs;
+    unsigned item_to_get;
+    uint64_t key_range;
+    std::atomic<bool> *start;
+    std::atomic<unsigned> *ready_count;
+    unsigned failed_get = 0;
+    std::vector<unsigned> get_lats;
+    get_thread_param(CCEH **_dbs, unsigned _item, uint64_t _range, std::atomic<bool> *_s,
+                     std::atomic<unsigned> *_rc) : 
+                     dbs(_dbs), item_to_get(_item), key_range(_range), start(_s), ready_count(_rc) {
+        get_lats = std::vector<unsigned>(1000, 0);
+    }
+};
+void GetTestThread(get_thread_param *p) {
+    std::vector<uint64_t> keys;
+    char value[valueSize];
+    default_random_engine re(time(0));
+    uniform_int_distribution<uint64_t> u(0, p->key_range-1);
+    uint64_t tstart, tspan;
+    //prepare random keys to get
+    for (unsigned i = 0; i < p->item_to_get; ++i) {
+        keys.push_back(u(re));
+    }
+    unsigned db_mask = ServerNum-1;
+    p->ready_count->fetch_add(1, std::memory_order_acq_rel);
+    while(!p->start->load(std::memory_order_acquire)) {asm("nop");}
+    for (unsigned i = 0; i < p->item_to_get; ++i) {
+#ifdef RECORD_GET_LAT
+        tstart = GetTimeNsec();
+#endif
+        if (!(p->dbs[keys[i]&db_mask]->Get(keys[i]))) {
+            p->failed_get++;
+        }
+#ifdef RECORD_GET_LAT
+        tspan = GetTimeNsec()-tstart;
+        if (tspan/10 < 1000) ++p->get_lats[tspan/10];
+        else ++p->get_lats[999];
+#endif
+    }
+}
+
 #ifdef YCSB_TEST
 using namespace util;
 class DBTest:public KVBase {
@@ -298,66 +362,83 @@ int main(int argc, char* argv[]){
             }
             fflush(stdout);
         }
-        //clock_gettime(CLOCK_REALTIME, &time_end);
         elapsed = GetTimeNsec() - put_start;
         for (int i = 0; i < ServerNum; i++) {
             server_threads[i].join();
         }
-        /*
-        for(Key_t i = 0; i < InserS;i++) {
-            clock_gettime(CLOCK_REALTIME, &start);
-            HashTable->Insert(i, i*1931+1);
-            clock_gettime(CLOCK_REALTIME, &end);
-            elapsed += ((end.tv_sec - start.tv_sec) * 1000000000 + (end.tv_nsec - start.tv_nsec));
-        }
-        */
         std::cout << "Put Entries: " << InsertSize << ", size " 
             << ((double)(InsertSize*sizeof(size_t)*2))/1024/1024 << "MB, time: " << elapsed 
             << "ns, avg_time " << ((double)elapsed)/InsertSize << "ns, ops: " 
             << InsertSize/(((double)elapsed)/1000000000)/1024/1024 << "Mops." << std::endl;
-        //zExecute(mem_command);
+#ifdef RECORD_PUT_LAT
+        vector<unsigned> ptime = vector<unsigned>(1000, 0);
+        for(unsigned i = 0; i < ServerNum; i++){
+            for (unsigned j = 0; j < 1000; ++j) {
+                ptime[j] += params[i]->put_lats[j];
+            }
         }
-        std::cout << "Begin to get..." << std::endl;
+        std::cout << "Put Lat PDF" << std::endl;
+        for (int i = 0; i < 1000; i++) {
+            printf("%d %llu\n", i*10, ptime[i]);
+        }
+#endif
+        }
+        std::cout << "Begin get test with " << GetThreadNum << "threads." << std::endl;
         {
 	    fflush(stdout);
-        default_random_engine re(time(0));
-        uniform_int_distribution<Key_t> u(0, InsertSize-1);
+        //default_random_engine re(time(0));
+        //uniform_int_distribution<Key_t> u(0, InsertSize-1);
         //uniform_int_distribution<Key_t> u(InsertSize, InsertSize*10);
-        elapsed = 0;
-	    uint64_t r_span = 0, r_max = 0, r_min = ~0;
+        //elapsed = 0;
+	    //uint64_t r_span = 0, r_max = 0, r_min = ~0;
         unsigned entries_to_get = 100*1024*1024;
+        unsigned entries_to_get_per_thread = entries_to_get/GetThreadNum;
         Key_t t_key;
         size_t fail_get = 0;
-        uint64_t rtime[1000];
-        for (int i = 0; i < 1000; i++) rtime[i] = 0;
+#ifdef RECORD_GET_LAT
+        vector<unsigned> rtime = vector<unsigned>(1000, 0);
+#endif
         //util::IPMWatcher watcher("cceh_get");
         //debug_perf_switch();
-        for(unsigned i = 0; i < entries_to_get; i++){
-            t_key = u(re);
-            clock_gettime(CLOCK_REALTIME, &time_start);
-            auto ret = HashTables[t_key%ServerNum]->Get(t_key);
-            clock_gettime(CLOCK_REALTIME, &time_end);
-            r_span = ((time_end.tv_sec - time_start.tv_sec) * 1000000000 + (time_end.tv_nsec - time_start.tv_nsec));
-	        elapsed += r_span;
-	        if (r_span > r_max) r_max = r_span;
-	        if (r_span < r_min) r_min = r_span;
-            if (ret == NONE) fail_get++;
-            if (r_span > 10000) {
-                rtime[999]++;
-            } else {
-                rtime[r_span/10]++;
+        atomic<bool> get_start(false);
+        atomic<unsigned> get_thread_ready_count(0);
+        get_thread_param *get_params[GetThreadNum];
+        thread get_threads[GetThreadNum];
+        for (unsigned i = 0; i < GetThreadNum; ++i) {
+            get_params[i] = new get_thread_param(HashTables,
+                                                 entries_to_get_per_thread,
+                                                 InsertSize,
+                                                 &get_start,
+                                                 &get_thread_ready_count);
+            get_threads[i] = thread(GetTestThread, get_params[i]);
+        }
+        while (get_thread_ready_count.load(std::memory_order_acquire) < GetThreadNum) {asm("nop");}
+        get_start.store(true, std::memory_order_release);
+        uint64_t tstart = GetTimeNsec();
+        for (unsigned i = 0; i < GetThreadNum; ++i) {
+            get_threads[i].join();
+        }
+        uint64_t tspan = GetTimeNsec() - tstart;
+        std::cout << "Get test time span:   " << tspan << "ns" << std::endl
+                  << "Get throughput:       " << entries_to_get/(tspan/1000000000.0) << "Ops/s" << std::endl;
+#ifdef RECORD_GET_LAT
+        for(unsigned i = 0; i < GetThreadNum; i++){
+            for (unsigned j = 0; j < 1000; ++j) {
+                rtime[j] += get_params[i]->get_lats[j];
             }
         }
         //debug_perf_stop();
+        /*
         std::cout << "Get Entries: " << entries_to_get << ", fail get" << fail_get << ", size " 
             << ((double)(entries_to_get*sizeof(size_t)*2))/1024/1024 << "MB, time: " << elapsed 
             << "ns, avg_time " << ((double)elapsed)/entries_to_get << "ns, ops: " 
             << entries_to_get/(((double)elapsed)/1000000000)/1024/1024 << "Mops, min " << r_min 
-            << ", max " << r_max << std::endl;
+            << ", max " << r_max << std::endl;*/
         std::cout << "Read Lat PDF" << std::endl;
         for (int i = 0; i < 1000; i++) {
             printf("%d %llu\n", i*10, rtime[i]);
         }
+#endif /*RECORD_GET_LAT*/
         }
     }else{
         return 0;
